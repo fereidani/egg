@@ -587,7 +587,7 @@ impl<L: Language + Display> RecExpr<L> {
             let mut vec = vec![op];
             for child in node.children().iter().map(|i| usize::from(*i)) {
                 vec.push(if let Some(s) = f(child) {
-                    return Sexp::String(s);
+                    Sexp::String(s)
                 } else if child < i {
                     self.to_sexp_rec(child, f)
                 } else {
