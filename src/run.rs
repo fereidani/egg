@@ -281,9 +281,10 @@ impl core::fmt::Display for Report {
         writeln!(f, "  Egraph size: {} nodes, {} classes, {} memo", self.egraph_nodes, self.egraph_classes, self.memo_size)?;
         writeln!(f, "  Rebuilds: {}", self.rebuilds)?;
         writeln!(f, "  Total time: {}", self.total_time)?;
-        writeln!(f, "    Search:  ({:.2}) {}", self.search_time / self.total_time, self.search_time)?;
-        writeln!(f, "    Apply:   ({:.2}) {}", self.apply_time / self.total_time, self.apply_time)?;
-        writeln!(f, "    Rebuild: ({:.2}) {}", self.rebuild_time / self.total_time, self.rebuild_time)?;
+        let pct = |part: f64| if self.total_time > 0.0 { part / self.total_time } else { 0.0 };
+        writeln!(f, "    Search:  ({:.2}) {}", pct(self.search_time), self.search_time)?;
+        writeln!(f, "    Apply:   ({:.2}) {}", pct(self.apply_time), self.apply_time)?;
+        writeln!(f, "    Rebuild: ({:.2}) {}", pct(self.rebuild_time), self.rebuild_time)?;
         Ok(())
     }
 }
