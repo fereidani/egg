@@ -1,7 +1,8 @@
+use alloc::collections::VecDeque;
 use core::cmp::Ordering;
 use core::fmt::Debug;
 
-use crate::util::{HashMap, hashmap_with_capacity};
+use crate::util::{HashMap, HashSet, hashmap_with_capacity};
 use crate::{Analysis, EClass, EGraph, Id, Language, RecExpr};
 
 /** Extracting a single [`RecExpr`] from an [`EGraph`].
@@ -40,7 +41,7 @@ assert_eq!(best, "10".parse().unwrap());
 #[derive(Debug)]
 pub struct Extractor<'a, CF: CostFunction<L>, L: Language, N: Analysis<L>> {
     cost_function: CF,
-    costs: HashMap<Id, (CF::Cost, L)>,
+    costs: HashMap<Id, (CF::Cost, usize)>,
     egraph: &'a EGraph<L, N>,
 }
 
@@ -223,20 +224,23 @@ where
     /// Find the cheapest (lowest cost) represented `RecExpr` in the
     /// given eclass.
     pub fn find_best(&self, eclass: Id) -> (CF::Cost, RecExpr<L>) {
-        let (cost, root) = self.costs[&self.egraph.find(eclass)].clone();
+        let canonical = self.egraph.find(eclass);
+        let (cost, node_idx) = self.costs[&canonical].clone();
+        let root = self.egraph[canonical].nodes[node_idx].clone();
         let expr = root.build_recexpr(|id| self.find_best_node(id).clone());
         (cost, expr)
     }
 
     /// Find the cheapest e-node in the given e-class.
     pub fn find_best_node(&self, eclass: Id) -> &L {
-        &self.costs[&self.egraph.find(eclass)].1
+        let canonical = self.egraph.find(eclass);
+        let node_idx = self.costs[&canonical].1;
+        &self.egraph[canonical].nodes[node_idx]
     }
 
     /// Find the cost of the term that would be extracted from this e-class.
     pub fn find_best_cost(&self, eclass: Id) -> CF::Cost {
-        let (cost, _) = &self.costs[&self.egraph.find(eclass)];
-        cost.clone()
+        self.costs[&self.egraph.find(eclass)].0.clone()
     }
 
     fn node_total_cost(&mut self, node: &L) -> Option<CF::Cost> {
@@ -252,22 +256,34 @@ where
     }
 
     fn find_costs(&mut self) {
-        let mut did_something = true;
-        while did_something {
-            did_something = false;
+        let mut queue: VecDeque<Id> = self.egraph.classes().map(|c| c.id).collect();
+        let mut in_queue: HashSet<Id> = queue.iter().copied().collect();
 
-            for class in self.egraph.classes() {
-                let pass = self.make_pass(class);
-                match (self.costs.get(&class.id), pass) {
-                    (None, Some(new)) => {
-                        self.costs.insert(class.id, new);
-                        did_something = true;
+        while let Some(id) = queue.pop_front() {
+            in_queue.remove(&id);
+            let class = self.egraph.find(id);
+            let class = &self.egraph[class];
+            let pass = self.make_pass(class);
+
+            let changed = match (self.costs.get(&class.id), pass) {
+                (None, Some(new)) => {
+                    self.costs.insert(class.id, new);
+                    true
+                }
+                (Some(old), Some(new)) if new.0 < old.0 => {
+                    self.costs.insert(class.id, new);
+                    true
+                }
+                _ => false,
+            };
+
+            if changed {
+                for &parent in class.parents.iter() {
+                    let canonical_parent = self.egraph.find(parent);
+                    if !in_queue.contains(&canonical_parent) {
+                        in_queue.insert(canonical_parent);
+                        queue.push_back(canonical_parent);
                     }
-                    (Some(old), Some(new)) if new.0 < old.0 => {
-                        self.costs.insert(class.id, new);
-                        did_something = true;
-                    }
-                    _ => (),
                 }
             }
         }
@@ -283,13 +299,15 @@ where
         }
     }
 
-    fn make_pass(&mut self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, L)> {
-        let (cost, node) = eclass
+    fn make_pass(&mut self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, usize)> {
+        let (cost, i) = eclass
+            .nodes
             .iter()
-            .map(|n| (self.node_total_cost(n), n))
+            .enumerate()
+            .map(|(i, n)| (self.node_total_cost(n), i))
             .min_by(|a, b| cmp(&a.0, &b.0))
             .unwrap_or_else(|| panic!("Can't extract, eclass is empty: {:#?}", eclass));
-        cost.map(|c| (c, node.clone()))
+        cost.map(|c| (c, i))
     }
 }
 
