@@ -694,10 +694,10 @@ impl<L: FromOp> FromStr for RecExpr<L> {
     }
 }
 
-/// Result of [`Analysis::merge`] indicating which of the inputs
+/// Result of [`merge_data`] indicating which of the inputs
 /// are different from the merged result.
 ///
-/// The fields correspond to whether the initial `a` and `b` inputs to [`Analysis::merge`]
+/// The fields correspond to whether the initial `a` and `b` inputs to [`merge_data`]
 /// were different from the final merged value.
 ///
 /// In both cases the result may be conservative -- they may indicate `true` even
@@ -754,8 +754,8 @@ struct ConstantFolding;
 impl Analysis<SimpleMath> for ConstantFolding {
     type Data = Option<i32>;
 
-    fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        egg::merge_max(to, from)
+    fn join(&mut self, a: &Self::Data, b: &Self::Data) -> Self::Data {
+        egg::join_max(a, b)
     }
 
     fn make(egraph: &mut EGraph<SimpleMath, Self>, enode: &SimpleMath, _id: Id) -> Self::Data {
@@ -796,7 +796,9 @@ assert_eq!(runner.egraph.find(runner.roots[0]), runner.egraph.find(just_foo));
 */
 pub trait Analysis<L: Language>: Sized {
     /// The per-[`EClass`] data for this analysis.
-    type Data: Debug;
+    ///
+    /// `PartialEq` lets [`merge_data`] tell which side of a join changed.
+    type Data: Debug + PartialEq;
 
     /// Makes a new [`Analysis`] data for a given e-node that will go into the given e-class.
     ///
@@ -836,28 +838,18 @@ pub trait Analysis<L: Language>: Sized {
     ) {
     }
 
-    /// Defines how to merge two `Data`s when their containing
-    /// [`EClass`]es merge.
+    /// Joins two `Data`s when their containing [`EClass`]es merge.
     ///
-    /// This should update `a` to correspond to the merged analysis
-    /// data.
-    ///
-    /// The result is a `DidMerge(a_merged, b_merged)` indicating whether
-    /// the merged result is different from `a` and `b` respectively.
-    ///
-    /// Since `merge` can modify `a`, let `a0`/`a1` be the value of `a`
-    /// before/after the call to `merge`, respectively.
-    ///
-    /// If `a0 != a1` the result must have `a_merged == true`. This may be
-    /// conservative -- it may be `true` even if even if `a0 == a1`.
-    ///
-    /// If `b != a1` the result must have `b_merged == true`. This may be
-    /// conservative -- it may be `true` even if even if `b == a1`.
+    /// The join must be associative, commutative and idempotent, so the order of
+    /// merges cannot change the result.
     ///
     /// This function may modify the [`Analysis`], which can be useful as a way
     /// to store information for the [`Analysis::modify`] hook to process, since
     /// `modify` has access to the e-graph.
-    fn merge(&mut self, a: &mut Self::Data, b: Self::Data) -> DidMerge;
+    ///
+    /// [`merge_data`] derives [`DidMerge`] by comparing the result with both
+    /// inputs.
+    fn join(&mut self, a: &Self::Data, b: &Self::Data) -> Self::Data;
 
     /// A hook that allows the modification of the
     /// [`EGraph`].
@@ -865,7 +857,7 @@ pub trait Analysis<L: Language>: Sized {
     /// By default this does nothing.
     ///
     /// This function is called immediately following
-    /// `Analysis::merge` when unions are performed.
+    /// `Analysis::join` when unions are performed.
     #[allow(unused_variables)]
     fn modify(egraph: &mut EGraph<L, Self>, id: Id) {}
 
@@ -883,59 +875,56 @@ pub trait Analysis<L: Language>: Sized {
 impl<L: Language> Analysis<L> for () {
     type Data = ();
     fn make(_egraph: &mut EGraph<L, Self>, _enode: &L, _id: Id) -> Self::Data {}
-    fn merge(&mut self, _: &mut Self::Data, _: Self::Data) -> DidMerge {
-        DidMerge(false, false)
-    }
+    fn join(&mut self, _: &Self::Data, _: &Self::Data) -> Self::Data {}
 }
 
-/// A utility for implementing [`Analysis::merge`]
+/// Join two e-class facts with [`Analysis::join`] and report which side moved.
+pub fn merge_data<L, N>(analysis: &mut N, a: &mut N::Data, b: N::Data) -> DidMerge
+where
+    L: Language,
+    N: Analysis<L>,
+{
+    let merged = analysis.join(a, &b);
+    let did = DidMerge(*a != merged, b != merged);
+    *a = merged;
+    did
+}
+
+/// A utility for implementing [`Analysis::join`]
 /// when the `Data` type has a total ordering.
 /// This will take the maximum of the two values.
-pub fn merge_max<T: Ord>(to: &mut T, from: T) -> DidMerge {
-    let cmp = (*to).cmp(&from);
-    match cmp {
-        Ordering::Less => {
-            *to = from;
-            DidMerge(true, false)
-        }
-        Ordering::Equal => DidMerge(false, false),
-        Ordering::Greater => DidMerge(false, true),
+pub fn join_max<T: Ord + Clone>(a: &T, b: &T) -> T {
+    match a.cmp(b) {
+        Ordering::Less => b.clone(),
+        Ordering::Equal | Ordering::Greater => a.clone(),
     }
 }
 
-/// A utility for implementing [`Analysis::merge`]
+/// A utility for implementing [`Analysis::join`]
 /// when the `Data` type has a total ordering.
 /// This will take the minimum of the two values.
-pub fn merge_min<T: Ord>(to: &mut T, from: T) -> DidMerge {
-    let cmp = (*to).cmp(&from);
-    match cmp {
-        Ordering::Less => DidMerge(false, true),
-        Ordering::Equal => DidMerge(false, false),
-        Ordering::Greater => {
-            *to = from;
-            DidMerge(true, false)
-        }
+pub fn join_min<T: Ord + Clone>(a: &T, b: &T) -> T {
+    match a.cmp(b) {
+        Ordering::Greater => b.clone(),
+        Ordering::Equal | Ordering::Less => a.clone(),
     }
 }
 
-/// A utility for implementing [`Analysis::merge`]
+/// A utility for implementing [`Analysis::join`]
 /// when the `Data` type is an [`Option`].
 ///
-/// Always take a `Some` over a `None`
-/// and calls the given function to merge two `Some`s.
-pub fn merge_option<T>(
-    to: &mut Option<T>,
-    from: Option<T>,
-    merge_fn: impl FnOnce(&mut T, T) -> DidMerge,
-) -> DidMerge {
-    match (to.as_mut(), from) {
-        (None, None) => DidMerge(false, false),
-        (None, from @ Some(_)) => {
-            *to = from;
-            DidMerge(true, false)
-        }
-        (Some(_), None) => DidMerge(false, true),
-        (Some(a), Some(b)) => merge_fn(a, b),
+/// Always takes a `Some` over a `None`, and calls the given function to join
+/// two `Some`s.
+pub fn join_option<T: Clone>(
+    a: &Option<T>,
+    b: &Option<T>,
+    join_fn: impl FnOnce(&T, &T) -> T,
+) -> Option<T> {
+    match (a, b) {
+        (None, None) => None,
+        (None, Some(b)) => Some(b.clone()),
+        (Some(a), None) => Some(a.clone()),
+        (Some(a), Some(b)) => Some(join_fn(a, b)),
     }
 }
 

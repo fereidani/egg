@@ -1188,7 +1188,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         assert_eq!(id1, class1.id);
 
         self.pending.extend(class2.parents.iter().copied());
-        let did_merge = self.analysis.merge(&mut class1.data, class2.data);
+        let did_merge =
+            crate::merge_data::<L, N>(&mut self.analysis, &mut class1.data, class2.data);
         if did_merge.0 {
             self.analysis_pending.extend(class1.parents.iter().copied());
         }
@@ -1206,7 +1207,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Update the analysis data of an e-class.
     ///
     /// This also propagates the changes through the e-graph,
-    /// so [`Analysis::make`] and [`Analysis::merge`] will get
+    /// so [`Analysis::make`] and [`Analysis::join`] will get
     /// called for other parts of the e-graph on rebuild.
     pub fn set_analysis_data(&mut self, id: Id, new_data: N::Data) {
         let id = self.find_mut(id);
@@ -1363,7 +1364,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 let node_data = N::remake(self, &node, class_id);
                 let class = self.classes.get_mut(&class_id).unwrap();
 
-                let did_merge = self.analysis.merge(&mut class.data, node_data);
+                let did_merge =
+                    crate::merge_data::<L, N>(&mut self.analysis, &mut class.data, node_data);
                 if did_merge.0 {
                     self.analysis_pending.extend(class.parents.iter().copied());
                     N::modify(self, class_id)

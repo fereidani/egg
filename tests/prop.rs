@@ -19,10 +19,10 @@ type Rewrite = egg::Rewrite<Prop, ConstantFold>;
 struct ConstantFold;
 impl Analysis<Prop> for ConstantFold {
     type Data = Option<(bool, PatternAst<Prop>)>;
-    fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-        merge_option(to, from, |a, b| {
+    fn join(&mut self, a: &Self::Data, b: &Self::Data) -> Self::Data {
+        join_option(a, b, |a, b| {
             assert_eq!(a.0, b.0, "Merged non-equal constants");
-            DidMerge(false, false)
+            a.clone()
         })
     }
 

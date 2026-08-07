@@ -38,7 +38,7 @@ type EGraph = egg::EGraph<Lambda, LambdaAnalysis>;
 #[derive(Default)]
 struct LambdaAnalysis;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 struct Data {
     free: HashSet<Id>,
     constant: Option<(Lambda, PatternAst<Lambda>)>,
@@ -63,18 +63,14 @@ fn eval(egraph: &EGraph, enode: &Lambda) -> Option<(Lambda, PatternAst<Lambda>)>
 
 impl Analysis<Lambda> for LambdaAnalysis {
     type Data = Data;
-    fn merge(&mut self, to: &mut Data, from: Data) -> DidMerge {
-        let before_len = to.free.len();
-        // to.free.extend(from.free);
-        to.free.retain(|i| from.free.contains(i));
-        // compare lengths to see if I changed to or from
-        DidMerge(
-            before_len != to.free.len(),
-            to.free.len() != from.free.len(),
-        ) | merge_option(&mut to.constant, from.constant, |a, b| {
-            assert_eq!(a.0, b.0, "Merged non-equal constants");
-            DidMerge(false, false)
-        })
+    fn join(&mut self, a: &Data, b: &Data) -> Data {
+        Data {
+            free: a.free.intersection(&b.free).copied().collect(),
+            constant: join_option(&a.constant, &b.constant, |a, b| {
+                assert_eq!(a.0, b.0, "Merged non-equal constants");
+                a.clone()
+            }),
+        }
     }
 
     fn make(egraph: &mut EGraph, enode: &Lambda, _id: Id) -> Data {

@@ -261,8 +261,8 @@ where
 /// struct MinSize;
 /// impl Analysis<Math> for MinSize {
 ///     type Data = usize;
-///     fn merge(&mut self, to: &mut Self::Data, from: Self::Data) -> DidMerge {
-///         merge_min(to, from)
+///     fn join(&mut self, a: &Self::Data, b: &Self::Data) -> Self::Data {
+///         join_min(a, b)
 ///     }
 ///     fn make(egraph: &mut EGraph, enode: &Math, _id: Id) -> Self::Data {
 ///         let get_size = |i: Id| egraph[i].data;
