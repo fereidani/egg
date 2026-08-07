@@ -348,6 +348,11 @@ where
         Some(&self.ast)
     }
 
+    /// A pattern instantiates its right-hand side for every match.
+    fn is_total(&self) -> bool {
+        true
+    }
+
     fn apply_matches(
         &self,
         egraph: &mut EGraph<L, A>,

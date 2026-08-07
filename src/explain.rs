@@ -423,7 +423,9 @@ impl<L: Language> Explanation<L> {
         }
     }
 
-    // if the rewrite is just patterns, then it can check it
+    // Only pattern-shaped rewrites can be checked; anything else passes.
+    // Conditions cannot be re-run here, so a conditional rewrite is checked
+    // against what its applier builds (`get_pattern_ast`, not `is_total`).
     fn check_rewrite<'a, N: Analysis<L>>(
         current: &'a FlatTerm<L>,
         next: &'a FlatTerm<L>,

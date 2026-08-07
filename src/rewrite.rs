@@ -366,8 +366,17 @@ where
     }
 
     /// For patterns, get the ast directly as a reference.
+    ///
+    /// This is what the applier builds when it fires; see [`Applier::is_total`].
     fn get_pattern_ast(&self) -> Option<&PatternAst<L>> {
         None
+    }
+
+    /// Whether this applier fires on every match. Defaults to `false`; check it
+    /// before rebuilding a rewrite from [`Applier::get_pattern_ast`], or a
+    /// condition is lost.
+    fn is_total(&self) -> bool {
+        false
     }
 
     /// Apply a single substitution.
@@ -432,8 +441,14 @@ where
     A: Applier<L, N>,
     N: Analysis<L>,
 {
+    /// The wrapped applier's ast.
     fn get_pattern_ast(&self) -> Option<&PatternAst<L>> {
         self.applier.get_pattern_ast()
+    }
+
+    /// Never total: the condition can decline a match.
+    fn is_total(&self) -> bool {
+        false
     }
 
     fn apply_one(
