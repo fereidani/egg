@@ -15,6 +15,12 @@ use num_traits::identities::{One, Zero};
 
 type ProofCost = BigUint;
 
+/// Cost of a path through the explanation graph, used only for comparisons
+/// while searching for short explanations. Saturating `u128` arithmetic: any
+/// proof long enough to saturate cannot be materialized anyway, and ordering
+/// between non-saturated costs is exact.
+type PathCost = u128;
+
 const CONGRUENCE_LIMIT: usize = 2;
 const GREEDY_NUM_ITERS: usize = 2;
 
@@ -83,7 +89,7 @@ pub struct Explain<L: Language> {
     // Invariant: The distance is always <= the unoptimized distance
     // That is, less than or equal to the result of `distance_between`
     #[cfg_attr(feature = "serde-1", serde(skip))]
-    shortest_explanation_memo: HashMap<(Id, Id), (ProofCost, Id)>,
+    shortest_explanation_memo: HashMap<(Id, Id), (PathCost, Id)>,
 }
 
 pub(crate) struct ExplainNodes<'a, L: Language> {
@@ -93,9 +99,9 @@ pub(crate) struct ExplainNodes<'a, L: Language> {
 
 #[derive(Default)]
 struct DistanceMemo {
-    parent_distance: Vec<(Id, ProofCost)>,
+    parent_distance: Vec<(Id, PathCost)>,
     common_ancestor: HashMap<(Id, Id), Id>,
-    tree_depth: HashMap<Id, ProofCost>,
+    tree_depth: Vec<PathCost>,
 }
 
 /// Explanation trees are the compact representation showing
@@ -876,7 +882,7 @@ impl<L: Language> FlatTerm<L> {
 // Make sure to use push_increase instead of push when using priority queue
 #[derive(Clone, Eq, PartialEq)]
 struct HeapState<I> {
-    cost: ProofCost,
+    cost: PathCost,
     item: I,
 }
 // The priority queue depends on `Ord`.
@@ -947,8 +953,8 @@ impl<L: Language> Explain<L> {
         if node1 == node2 {
             return;
         }
-        if let Some((cost, _)) = self.shortest_explanation_memo.get(&(node1, node2))
-            && (cost.is_zero() || cost.is_one())
+        if let Some(&(cost, _)) = self.shortest_explanation_memo.get(&(node1, node2))
+            && cost <= 1
         {
             return;
         }
@@ -974,9 +980,9 @@ impl<L: Language> Explain<L> {
             .neighbors
             .push(rconnection);
         self.shortest_explanation_memo
-            .insert((node1, node2), (BigUint::one(), node2));
+            .insert((node1, node2), (1, node2));
         self.shortest_explanation_memo
-            .insert((node2, node1), (BigUint::one(), node1));
+            .insert((node2, node1), (1, node1));
     }
 
     pub(crate) fn union(&mut self, node1: Id, node2: Id, justification: Justification) {
@@ -989,9 +995,9 @@ impl<L: Language> Explain<L> {
 
         if let Justification::Rule(_) = justification {
             self.shortest_explanation_memo
-                .insert((node1, node2), (BigUint::one(), node2));
+                .insert((node1, node2), (1, node2));
             self.shortest_explanation_memo
-                .insert((node2, node1), (BigUint::one(), node1));
+                .insert((node2, node1), (1, node1));
         }
 
         let pconnection = Connection {
@@ -1315,30 +1321,32 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         enodes
     }
 
-    fn add_tree_depths(&self, node: Id, depths: &mut HashMap<Id, ProofCost>) -> ProofCost {
-        if depths.get(&node).is_none() {
-            let parent = self.parent(node);
-            let depth = if parent == node {
-                BigUint::zero()
-            } else {
-                self.add_tree_depths(parent, depths) + 1_u32
-            };
-
-            depths.insert(node, depth);
-        }
-
-        depths.get(&node).unwrap().clone()
-    }
-
-    fn calculate_tree_depths(&self) -> HashMap<Id, ProofCost> {
-        let mut depths = HashMap::default();
-        for i in 0..self.explainfind.len() {
-            self.add_tree_depths(Id::from(i), &mut depths);
+    fn calculate_tree_depths(&self) -> Vec<PathCost> {
+        const UNSET: PathCost = PathCost::MAX;
+        let n = self.explainfind.len();
+        let mut depths = vec![UNSET; n];
+        let mut path = Vec::new();
+        for i in 0..n {
+            // walk to the first node with a known depth (or a root),
+            // then fill the path back down
+            let mut node = Id::from(i);
+            while depths[usize::from(node)] == UNSET {
+                let parent = self.parent(node);
+                if parent == node {
+                    depths[usize::from(node)] = 0;
+                    break;
+                }
+                path.push(node);
+                node = parent;
+            }
+            while let Some(top) = path.pop() {
+                depths[usize::from(top)] = depths[usize::from(self.parent(top))] + 1;
+            }
         }
         depths
     }
 
-    fn replace_distance(&mut self, current: Id, next: Id, right: Id, distance: ProofCost) {
+    fn replace_distance(&mut self, current: Id, next: Id, right: Id, distance: PathCost) {
         self.shortest_explanation_memo
             .insert((current, right), (distance, next));
     }
@@ -1350,18 +1358,13 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         distance_memo: &mut DistanceMemo,
     ) {
         self.shortest_explanation_memo
-            .insert((right, right), (BigUint::zero(), right));
+            .insert((right, right), (0, right));
         for connection in left_connections.iter().rev() {
             let next = connection.next;
             let current = connection.current;
-            let next_cost = self
-                .shortest_explanation_memo
-                .get(&(next, right))
-                .unwrap()
-                .0
-                .clone();
+            let next_cost = self.shortest_explanation_memo.get(&(next, right)).unwrap().0;
             let dist = self.connection_distance(connection, distance_memo);
-            self.replace_distance(current, next, right, next_cost + dist);
+            self.replace_distance(current, next, right, next_cost.saturating_add(dist));
         }
     }
 
@@ -1370,9 +1373,9 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         left: Id,
         right: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> ProofCost {
+    ) -> PathCost {
         if left == right {
-            return BigUint::zero();
+            return 0;
         }
         let ancestor = if let Some(a) = distance_memo.common_ancestor.get(&(left, right)) {
             *a
@@ -1399,7 +1402,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         );
 
         // calculate distance to find upper bound
-        b + c - (a << 1)
+        b.saturating_add(c).saturating_sub(a.saturating_mul(2))
 
         //assert_eq!(dist+1, Explanation::new(self.explain_enodes(left, right, &mut Default::default())).make_flat_explanation().len());
     }
@@ -1409,16 +1412,16 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         current: Id,
         next: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> ProofCost {
+    ) -> PathCost {
         let current_node = self.node(current).clone();
         let next_node = self.node(next).clone();
-        let mut cost: ProofCost = BigUint::zero();
+        let mut cost: PathCost = 0;
         for (left_child, right_child) in current_node
             .children()
             .iter()
             .zip(next_node.children().iter())
         {
-            cost += self.distance_between(*left_child, *right_child, distance_memo);
+            cost = cost.saturating_add(self.distance_between(*left_child, *right_child, distance_memo));
         }
         cost
     }
@@ -1427,12 +1430,12 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         &mut self,
         connection: &Connection,
         distance_memo: &mut DistanceMemo,
-    ) -> ProofCost {
+    ) -> PathCost {
         match connection.justification {
             Justification::Congruence => {
                 self.congruence_distance(connection.current, connection.next, distance_memo)
             }
-            Justification::Rule(_) => BigUint::one(),
+            Justification::Rule(_) => 1,
         }
     }
 
@@ -1441,24 +1444,25 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         enode: Id,
         ancestor: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> ProofCost {
+    ) -> PathCost {
         loop {
             let parent = distance_memo.parent_distance[usize::from(enode)].0;
-            let dist = distance_memo.parent_distance[usize::from(enode)].1.clone();
+            let dist = distance_memo.parent_distance[usize::from(enode)].1;
             if self.parent(parent) == parent {
                 break;
             }
 
             let parent_parent = distance_memo.parent_distance[usize::from(parent)].0;
             if parent_parent != parent {
-                let new_dist = dist + distance_memo.parent_distance[usize::from(parent)].1.clone();
+                let new_dist =
+                    dist.saturating_add(distance_memo.parent_distance[usize::from(parent)].1);
                 distance_memo.parent_distance[usize::from(enode)] = (parent_parent, new_dist);
             } else {
                 if ancestor == Id::from(usize::MAX) {
                     break;
                 }
-                if distance_memo.tree_depth.get(&parent).unwrap()
-                    <= distance_memo.tree_depth.get(&ancestor).unwrap()
+                if distance_memo.tree_depth[usize::from(parent)]
+                    <= distance_memo.tree_depth[usize::from(ancestor)]
                 {
                     break;
                 }
@@ -1471,7 +1475,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                     Justification::Congruence => {
                         self.congruence_distance(current, next, distance_memo)
                     }
-                    Justification::Rule(_) => BigUint::one(),
+                    Justification::Rule(_) => 1,
                 };
                 distance_memo.parent_distance[usize::from(parent)] = (self.parent(parent), cost);
             }
@@ -1480,7 +1484,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         //assert_eq!(distance_memo.parent_distance[usize::from(enode)].1+1,
         //Explanation::new(self.explain_enodes(enode, distance_memo.parent_distance[usize::from(enode)].0, &mut Default::default())).make_flat_explanation().len());
 
-        distance_memo.parent_distance[usize::from(enode)].1.clone()
+        distance_memo.parent_distance[usize::from(enode)].1
     }
 
     fn find_congruence_neighbors<N: Analysis<L>>(
@@ -1557,7 +1561,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
     ) -> Option<(Vec<Connection>, Vec<Connection>)> {
         let mut todo = BinaryHeap::new();
         todo.push(HeapState {
-            cost: BigUint::zero(),
+            cost: 0,
             item: Connection {
                 current: start,
                 next: start,
@@ -1567,7 +1571,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         });
 
         let mut last = HashMap::default();
-        let mut path_cost = HashMap::default();
+        let mut end_cost = None;
 
         'outer: loop {
             if todo.is_empty() {
@@ -1575,23 +1579,23 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
             }
             let state = todo.pop().unwrap();
             let connection = state.item;
-            let cost_so_far = state.cost.clone();
+            let cost_so_far = state.cost;
             let current = connection.next;
 
             if last.get(&current).is_some() {
                 continue 'outer;
             } else {
                 last.insert(current, connection);
-                path_cost.insert(current, cost_so_far.clone());
             }
 
             if current == end {
+                end_cost = Some(cost_so_far);
                 break;
             }
 
             for neighbor in &self.explainfind[usize::from(current)].neighbors {
                 if let Justification::Rule(_) = neighbor.justification {
-                    let neighbor_cost = cost_so_far.clone() + 1_u32;
+                    let neighbor_cost = cost_so_far.saturating_add(1);
                     todo.push(HeapState {
                         item: neighbor.clone(),
                         cost: neighbor_cost,
@@ -1602,7 +1606,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
             for other in congruence_neighbors[usize::from(current)].iter() {
                 let next = other;
                 let distance = self.congruence_distance(current, *next, distance_memo);
-                let next_cost = cost_so_far.clone() + distance;
+                let next_cost = cost_so_far.saturating_add(distance);
                 todo.push(HeapState {
                     item: Connection {
                         current,
@@ -1615,7 +1619,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
             }
         }
 
-        let total_cost = path_cost.get(&end);
+        let total_cost = end_cost;
 
         let left_connections;
         let mut right_connections = vec![];
@@ -1630,7 +1634,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                 dist
             );
         }*/
-        if *total_cost.unwrap() >= self.distance_between(start, end, distance_memo) {
+        if total_cost.unwrap() >= self.distance_between(start, end, distance_memo) {
             let (a_left_connections, a_right_connections) = self.get_path_unoptimized(start, end);
             left_connections = a_left_connections;
             right_connections = a_right_connections;
@@ -1664,10 +1668,23 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
     ) {
         let mut todo_congruence = VecDeque::new();
         todo_congruence.push_back((start, end));
+        // class sizes do not change in this loop; cache them per tree root
+        let mut class_size_cache: HashMap<Id, usize> = Default::default();
 
         while !todo_congruence.is_empty() {
             let (start, end) = todo_congruence.pop_front().unwrap();
-            let eclass_size = self.find_all_enodes(start).len();
+            let mut root = start;
+            while self.parent(root) != root {
+                root = self.parent(root);
+            }
+            let eclass_size = match class_size_cache.get(&root) {
+                Some(&size) => size,
+                None => {
+                    let size = self.find_all_enodes(start).len();
+                    class_size_cache.insert(root, size);
+                    size
+                }
+            };
             if fuel < eclass_size {
                 continue;
             }
@@ -1708,15 +1725,15 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
     fn tarjan_ocla(
         &self,
         enode: Id,
-        children: &HashMap<Id, Vec<Id>>,
-        common_ancestor_queries: &HashMap<Id, Vec<Id>>,
-        black_set: &mut HashSet<Id>,
+        children: &[Vec<Id>],
+        common_ancestor_queries: &[Vec<Id>],
+        black_set: &mut [bool],
         unionfind: &mut UnionFind,
         ancestor: &mut Vec<Id>,
         common_ancestor: &mut HashMap<(Id, Id), Id>,
     ) {
         ancestor[usize::from(enode)] = enode;
-        for child in children[&enode].iter() {
+        for child in children[usize::from(enode)].iter() {
             self.tarjan_ocla(
                 *child,
                 children,
@@ -1730,14 +1747,12 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
             ancestor[usize::from(unionfind.find(enode))] = enode;
         }
 
-        if common_ancestor_queries.get(&enode).is_some() {
-            black_set.insert(enode);
-            for other in common_ancestor_queries.get(&enode).unwrap() {
-                if black_set.contains(other) {
-                    let ancestor = ancestor[usize::from(unionfind.find(*other))];
-                    common_ancestor.insert((enode, *other), ancestor);
-                    common_ancestor.insert((*other, enode), ancestor);
-                }
+        black_set[usize::from(enode)] = true;
+        for other in common_ancestor_queries[usize::from(enode)].iter() {
+            if black_set[usize::from(*other)] {
+                let ancestor = ancestor[usize::from(unionfind.find(*other))];
+                common_ancestor.insert((enode, *other), ancestor);
+                common_ancestor.insert((*other, enode), ancestor);
             }
         }
     }
@@ -1751,25 +1766,20 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         classes: &ClassMap<L, N::Data>,
         congruence_neighbors: &[Vec<Id>],
     ) -> HashMap<(Id, Id), Id> {
-        let mut common_ancestor_queries = HashMap::default();
+        let n = self.explainfind.len();
+        let mut common_ancestor_queries: Vec<Vec<Id>> = vec![vec![]; n];
         for (s_int, others) in congruence_neighbors.iter().enumerate() {
-            let start = &Id::from(s_int);
+            let start = Id::from(s_int);
             for other in others {
                 for (left, right) in self
-                    .node(*start)
+                    .node(start)
                     .children()
                     .iter()
                     .zip(self.node(*other).children().iter())
                 {
                     if left != right {
-                        if common_ancestor_queries.get(start).is_none() {
-                            common_ancestor_queries.insert(*start, vec![]);
-                        }
-                        if common_ancestor_queries.get(other).is_none() {
-                            common_ancestor_queries.insert(*other, vec![]);
-                        }
-                        common_ancestor_queries.get_mut(start).unwrap().push(*other);
-                        common_ancestor_queries.get_mut(other).unwrap().push(*start);
+                        common_ancestor_queries[s_int].push(*other);
+                        common_ancestor_queries[usize::from(*other)].push(start);
                     }
                 }
             }
@@ -1777,24 +1787,22 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
 
         let mut common_ancestor = HashMap::default();
         let mut unionfind = UnionFind::default();
-        let mut ancestor = vec![];
-        for i in 0..self.explainfind.len() {
+        let mut ancestor = Vec::with_capacity(n);
+        for i in 0..n {
             unionfind.make_set();
             ancestor.push(Id::from(i));
         }
+        // the forests are disjoint, so the scratch needs no clearing
+        let mut children: Vec<Vec<Id>> = vec![vec![]; n];
+        let mut black_set = vec![false; n];
         for (eclass, _) in classes.iter() {
             let enodes = self.find_all_enodes(eclass);
-            let mut children: HashMap<Id, Vec<Id>> = HashMap::default();
             for enode in &enodes {
-                children.insert(*enode, vec![]);
-            }
-            for enode in &enodes {
-                if self.parent(*enode) != *enode {
-                    children.get_mut(&self.parent(*enode)).unwrap().push(*enode);
+                let parent = self.parent(*enode);
+                if parent != *enode {
+                    children[usize::from(parent)].push(*enode);
                 }
             }
-
-            let mut black_set = HashSet::default();
 
             let mut parent = *enodes.iter().next().unwrap();
             while parent != self.parent(parent) {
@@ -1823,7 +1831,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
     ) {
         let mut congruence_neighbors = vec![vec![]; self.explainfind.len()];
         self.find_congruence_neighbors::<N>(classes, &mut congruence_neighbors, unionfind);
-        let mut parent_distance = vec![(Id::from(0), BigUint::zero()); self.explainfind.len()];
+        let mut parent_distance = vec![(Id::from(0), 0); self.explainfind.len()];
         for (i, entry) in parent_distance.iter_mut().enumerate() {
             entry.0 = Id::from(i);
         }
