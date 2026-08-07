@@ -172,7 +172,12 @@ impl RunnerLimits {
         L: Language,
         N: Analysis<L>,
     {
-        let elapsed = self.start_time.unwrap().elapsed();
+        // the runner starts the clock first; an unstarted one counts as zero
+        debug_assert!(
+            self.start_time.is_some(),
+            "the runner starts the clock before checking limits"
+        );
+        let elapsed = self.start_time.map_or(Duration::ZERO, |t| t.elapsed());
         if elapsed > self.time_limit {
             return Err(StopReason::TimeLimit(elapsed.as_secs_f64()));
         }
@@ -443,8 +448,8 @@ where
         self.egraph.rebuild();
         loop {
             let iter = self.run_one(&rules);
+            let stop_reason = iter.stop_reason.clone();
             self.iterations.push(iter);
-            let stop_reason = self.iterations.last().unwrap().stop_reason.clone();
             // we need to check_limits after the iteration is complete to check for iter_limit
             if let Some(stop_reason) = stop_reason.or_else(|| self.check_limits().err()) {
                 info!("Stopping: {:?}", stop_reason);
@@ -453,8 +458,8 @@ where
             }
         }
 
-        assert!(!self.iterations.is_empty());
-        assert!(self.stop_reason.is_some());
+        debug_assert!(!self.iterations.is_empty(), "run performs an iteration");
+        debug_assert!(self.stop_reason.is_some(), "the loop breaks with a reason");
         self
     }
 
@@ -508,9 +513,14 @@ where
     }
 
     /// Creates a [`Report`] summarizing this `Runner`s run.
+    ///
+    /// Before [`run`](Runner::run), the stop reason is [`StopReason::Other`].
     pub fn report(&self) -> Report {
         Report {
-            stop_reason: self.stop_reason.clone().unwrap(),
+            stop_reason: self
+                .stop_reason
+                .clone()
+                .unwrap_or_else(|| StopReason::Other("the runner has not stopped".into())),
             iterations: self.iterations.len(),
             egraph_nodes: self.egraph.total_number_of_nodes(),
             egraph_classes: self.egraph.number_of_classes(),
@@ -524,7 +534,7 @@ where
     }
 
     fn run_one(&mut self, rules: &[&Rewrite<L, N>]) -> Iteration<IterData> {
-        assert!(self.stop_reason.is_none());
+        debug_assert!(self.stop_reason.is_none(), "run_one drives a live runner");
 
         info!("\nIteration {}", self.iterations.len());
 
@@ -657,7 +667,7 @@ fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
         eprintln!("WARNING: Duplicated rule names may affect rule reporting and scheduling.");
         log::warn!("Duplicated rule names may affect rule reporting and scheduling.");
         for (name, &count) in name_counts.iter() {
-            assert!(count > 1);
+            debug_assert!(count > 1, "only duplicated names survive the retain");
             #[cfg(feature = "std")]
             eprintln!("Rule '{}' appears {} times", name, count);
             log::warn!("Rule '{}' appears {} times", name, count);
@@ -876,6 +886,28 @@ impl Default for BackoffScheduler {
     }
 }
 
+/// Shifts `value` left by `shift` bits, saturating at [`usize::MAX`], so a rule
+/// banned many times stays banned instead of wrapping back to a low limit.
+fn saturating_shl(value: usize, shift: usize) -> usize {
+    if value == 0 {
+        return 0;
+    }
+
+    // lossless while the shift fits in the leading zeros
+    let headroom = value.leading_zeros() as usize;
+    debug_assert!(
+        headroom < usize::BITS as usize,
+        "a nonzero value has a set bit"
+    );
+    if shift <= headroom {
+        let shifted = value << shift;
+        debug_assert_eq!(shifted >> shift, value, "the shift lost no bits");
+        shifted
+    } else {
+        usize::MAX
+    }
+}
+
 impl<L, N> RewriteScheduler<L, N> for BackoffScheduler
 where
     L: Language,
@@ -890,37 +922,37 @@ where
             .filter(|(_, s)| s.banned_until > iteration)
             .collect();
 
-        if banned.is_empty() {
-            true
-        } else {
-            let min_ban = banned
-                .iter()
-                .map(|(_, s)| s.banned_until)
-                .min()
-                .expect("banned cannot be empty here");
+        // `None`: nothing is banned, so the runner may stop
+        let Some(min_ban) = banned.iter().map(|(_, s)| s.banned_until).min() else {
+            return true;
+        };
 
-            assert!(min_ban >= iteration);
-            let delta = min_ban - iteration;
+        debug_assert!(
+            min_ban > iteration,
+            "a banned rule is banned into the future"
+        );
+        let delta = min_ban.saturating_sub(iteration);
 
-            let mut unbanned = vec![];
-            for (name, s) in &mut banned {
-                s.banned_until -= delta;
-                if s.banned_until == iteration {
-                    unbanned.push(name.as_str());
-                }
+        let mut unbanned = vec![];
+        for (name, s) in &mut banned {
+            debug_assert!(s.banned_until >= min_ban, "min_ban is the minimum");
+            s.banned_until = s.banned_until.saturating_sub(delta);
+            if s.banned_until == iteration {
+                unbanned.push(name.as_str());
             }
-
-            assert!(!unbanned.is_empty());
-            info!(
-                "Banned {}/{}, fast-forwarded by {} to unban {}",
-                banned.len(),
-                n_stats,
-                delta,
-                unbanned.join(", "),
-            );
-
-            false
         }
+
+        // The rule that set `min_ban` was just fast-forwarded onto `iteration`.
+        debug_assert!(!unbanned.is_empty(), "the earliest ban always expires");
+        info!(
+            "Banned {}/{}, fast-forwarded by {} to unban {}",
+            banned.len(),
+            n_stats,
+            delta,
+            unbanned.join(", "),
+        );
+
+        false
     }
 
     fn search_rewrite<'a>(
@@ -939,16 +971,14 @@ where
             return vec![];
         }
 
-        let threshold = stats
-            .match_limit
-            .checked_shl(stats.times_banned as u32)
-            .unwrap();
+        let threshold = saturating_shl(stats.match_limit, stats.times_banned);
         let matches = rewrite.search_with_limit(egraph, threshold.saturating_add(1));
         let total_len: usize = matches.iter().map(|m| m.substs.len()).sum();
         if total_len > threshold {
-            let ban_length = stats.ban_length << stats.times_banned;
-            stats.times_banned += 1;
-            stats.banned_until = iteration + ban_length;
+            let ban_length = saturating_shl(stats.ban_length, stats.times_banned);
+            // saturating: a ban count that high is already permanent
+            stats.times_banned = stats.times_banned.saturating_add(1);
+            stats.banned_until = iteration.saturating_add(ban_length);
             info!(
                 "Banning {} ({}-{}) for {} iters: {} < {}",
                 rewrite.name,
