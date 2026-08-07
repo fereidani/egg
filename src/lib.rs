@@ -67,6 +67,7 @@ pub mod test;
 
 pub mod tutorials;
 
+mod dag_extract;
 #[cfg(feature = "std")]
 mod dot;
 mod eclass;
@@ -120,6 +121,7 @@ impl core::fmt::Display for Id {
 pub(crate) use {explain::Explain, unionfind::UnionFind};
 
 pub use {
+    dag_extract::*,
     eclass::EClass,
     egraph::{EGraph, LanguageMapper, SimpleLanguageMapper},
     explain::{
