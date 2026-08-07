@@ -134,12 +134,18 @@ pub trait Language: Debug + Clone + Eq + Ord + Hash {
     /// let recexpr = enode.join_recexprs(|_id| &a_plus_2);
     /// assert_eq!(recexpr, "(* (+ a 2) (+ a 2))".parse().unwrap())
     /// ```
+    ///
+    /// # Panics
+    ///
+    /// Panics if `child_recexpr` returns an empty expression, or one with a node
+    /// whose children are not earlier nodes of it.
     fn join_recexprs<F, Expr>(&self, mut child_recexpr: F) -> RecExpr<Self>
     where
         F: FnMut(Id) -> Expr,
         Expr: AsRef<[Self]>,
     {
         fn build<L: Language>(to: &mut RecExpr<L>, from: &[L]) -> Id {
+            debug_assert!(!from.is_empty(), "a child expression has a root node");
             let last = from.last().unwrap().clone();
             let new_node = last.map_children(|id| {
                 let i = usize::from(id) + 1;
@@ -178,8 +184,11 @@ pub trait Language: Debug + Clone + Eq + Ord + Hash {
     where
         F: FnMut(Id) -> Self,
     {
-        self.try_build_recexpr::<_, core::convert::Infallible>(|id| Ok(get_node(id)))
-            .unwrap()
+        match self.try_build_recexpr::<_, core::convert::Infallible>(|id| Ok(get_node(id))) {
+            Ok(expr) => expr,
+            // `Infallible` has no values, so this arm cannot be reached.
+            Err(never) => match never {},
+        }
     }
 
     /// Same as [`Language::build_recexpr`], but fallible.
@@ -512,6 +521,11 @@ impl<L: Language> RecExpr<L> {
     }
 
     /// Get the root node of this expression. When adding a new node via `add`, it becomes the new root.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the expression is empty. Every `RecExpr` egg returns is
+    /// non-empty.
     pub fn root(&self) -> Id {
         self.ids().last().unwrap()
     }
@@ -571,7 +585,10 @@ impl<L: Language + Display> Display for RecExpr<L> {
 impl<L: Language + Display> RecExpr<L> {
     /// Convert this RecExpr into an Sexp
     pub(crate) fn to_sexp(&self) -> Sexp {
-        let last = self.nodes.len() - 1;
+        // an empty expression has no root: render `()`, as `Display` does
+        let Some(last) = self.nodes.len().checked_sub(1) else {
+            return Sexp::List(vec![]);
+        };
         if !self.is_dag() {
             log::warn!("Tried to print a non-dag: {:?}", self.nodes);
         }
@@ -616,7 +633,10 @@ impl<L: Language + Display> RecExpr<L> {
         let sexp = self.to_sexp();
 
         let mut buf = String::new();
-        pretty_print(&mut buf, &sexp, width, 1).unwrap();
+        if pretty_print(&mut buf, &sexp, width, 1).is_err() {
+            // unreachable: writing to a `String` cannot fail
+            debug_assert!(false, "writing into a String cannot fail");
+        }
         buf
     }
 }
@@ -673,7 +693,8 @@ impl<L: FromOp> FromStr for RecExpr<L> {
                 }
                 Sexp::List(list) if list.is_empty() => Err(EmptySexp),
                 Sexp::List(list) => match &list[0] {
-                    Sexp::Empty => unreachable!("Cannot be in head position"),
+                    // not produced by the parsers, but just as empty as `()`
+                    Sexp::Empty => Err(EmptySexp),
                     list @ Sexp::List(..) => Err(HeadList(list.to_owned())),
                     Sexp::String(op) => {
                         let arg_ids: Vec<Id> = list[1..]
