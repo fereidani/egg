@@ -51,12 +51,14 @@ impl Machine {
         L: Language,
         N: Analysis<L>,
     {
+        // On a clean e-graph (asserted by `run_with_limit`) every id here is
+        // canonical, so ids are compared without `find`.
         let mut instructions = instructions.iter();
         while let Some(instruction) = instructions.next() {
             match instruction {
                 Instruction::Bind { i, out, node } => {
                     let remaining_instructions = instructions.as_slice();
-                    let eclass = &egraph[self.reg(*i)];
+                    let eclass = egraph.class_by_canonical_id(self.reg(*i));
                     return eclass.for_each_matching_node(node, |matched| {
                         self.reg.truncate(out.0 as usize);
                         matched.for_each(|id| self.reg.push(id));
@@ -73,7 +75,7 @@ impl Machine {
                     return Ok(());
                 }
                 Instruction::Compare { i, j } => {
-                    if egraph.find(self.reg(*i)) != egraph.find(self.reg(*j)) {
+                    if self.reg(*i) != self.reg(*j) {
                         return Ok(());
                     }
                 }
@@ -89,13 +91,12 @@ impl Machine {
                                 }
                             }
                             ENodeOrReg::Reg(r) => {
-                                self.lookup.push(egraph.find(self.reg(*r)));
+                                self.lookup.push(self.reg(*r));
                             }
                         }
                     }
 
-                    let id = egraph.find(self.reg(*i));
-                    if self.lookup.last().copied() != Some(id) {
+                    if self.lookup.last().copied() != Some(self.reg(*i)) {
                         return Ok(());
                     }
                 }
@@ -310,7 +311,7 @@ impl<L: Language> Program<L> {
 
         let mut machine = Machine::default();
         assert_eq!(machine.reg.len(), 0);
-        machine.reg.push(eclass);
+        machine.reg.push(egraph.find(eclass));
 
         let mut matches = Vec::new();
         machine

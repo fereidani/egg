@@ -71,6 +71,7 @@ mod dag_extract;
 #[cfg(feature = "std")]
 mod dot;
 mod eclass;
+pub(crate) use eclass::ClassMap;
 mod egraph;
 mod explain;
 mod extract;

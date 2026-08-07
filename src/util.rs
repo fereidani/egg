@@ -54,12 +54,14 @@ pub(crate) use hashmap::*;
 mod hashmap {
     pub(crate) type HashMap<K, V> = super::IndexMap<K, V>;
     pub(crate) type HashSet<K> = super::IndexSet<K>;
+    pub(crate) use indexmap::map::Entry;
 }
 #[cfg(not(feature = "deterministic"))]
 mod hashmap {
     use super::BuildHasher;
     pub(crate) type HashMap<K, V> = hashbrown::HashMap<K, V, BuildHasher>;
     pub(crate) type HashSet<K> = hashbrown::HashSet<K, BuildHasher>;
+    pub(crate) use hashbrown::hash_map::Entry;
 }
 
 pub(crate) fn hashmap_with_capacity<K, V>(cap: usize) -> hashmap::HashMap<K, V> {

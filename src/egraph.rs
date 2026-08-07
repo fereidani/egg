@@ -75,7 +75,7 @@ pub struct EGraph<L: Language, N: Analysis<L>> {
             deserialize = "N::Data: for<'a> Deserialize<'a>",
         ))
     )]
-    pub(crate) classes: HashMap<Id, EClass<L, N::Data>>,
+    pub(crate) classes: ClassMap<L, N::Data>,
     #[cfg_attr(feature = "serde-1", serde(skip))]
     #[cfg_attr(feature = "serde-1", serde(default = "default_classes_by_op"))]
     classes_by_op: HashMap<L::Discriminant, HashSet<Id>>,
@@ -132,8 +132,14 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     }
 
     /// Returns an mutating iterator over the eclasses in the egraph.
+    // `inspect` can't mutate through its shared reference, so `map` it is
+    #[allow(clippy::manual_inspect)]
     pub fn classes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut EClass<L, N::Data>> {
-        self.classes.values_mut()
+        self.classes.values_mut().map(|class| {
+            // the caller may mutate `nodes`, invalidating the group index
+            class.discrim_groups.clear();
+            class
+        })
     }
 
     /// Returns an iterator over the eclasses that contain a given op.
@@ -333,8 +339,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         product_map: &mut HashMap<(Id, Id), Id>,
     ) {
         let res_id = Self::get_product_id(class1, class2, product_map);
-        for node1 in &self.classes[&class1].nodes {
-            for node2 in &other.classes[&class2].nodes {
+        for node1 in &self.classes[class1].nodes {
+            for node2 in &other.classes[class2].nodes {
                 if node1.matches(node2) {
                     let children1 = node1.children();
                     let children2 = node2.children();
@@ -577,6 +583,16 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.unionfind.find_mut(id)
     }
 
+    /// Get the e-class for an id that is already known to be canonical,
+    /// skipping the `find` that [`Index`](core::ops::Index) performs.
+    ///
+    /// Panics if the id is not canonical (has no class).
+    pub(crate) fn class_by_canonical_id(&self, id: Id) -> &EClass<L, N::Data> {
+        self.classes
+            .get(id)
+            .unwrap_or_else(|| panic!("Invalid canonical id {}", id))
+    }
+
     /// Creates a [`Dot`] to visualize this egraph. See [`Dot`].
     #[cfg(feature = "std")]
     pub fn dot(&self) -> Dot<'_, L, N> {
@@ -630,6 +646,7 @@ where
                 .collect(),
             data: self.map_data(src_eclass.data),
             parents: src_eclass.parents,
+            discrim_groups: Vec::new(),
         }
     }
 
@@ -648,11 +665,7 @@ where
                 .map(|x| self.map_node(x))
                 .collect(),
             analysis_pending: src_egraph.analysis_pending,
-            classes: src_egraph
-                .classes
-                .into_iter()
-                .map(|(id, eclass)| (id, self.map_eclass(eclass)))
-                .collect(),
+            classes: src_egraph.classes.map(|eclass| self.map_eclass(eclass)),
             classes_by_op: src_egraph
                 .classes_by_op
                 .into_iter()
@@ -799,7 +812,7 @@ impl<L: Language, N: Analysis<L>> core::ops::Index<Id> for EGraph<L, N> {
     fn index(&self, id: Id) -> &Self::Output {
         let id = self.find(id);
         self.classes
-            .get(&id)
+            .get(id)
             .unwrap_or_else(|| panic!("Invalid id {}", id))
     }
 }
@@ -809,9 +822,13 @@ impl<L: Language, N: Analysis<L>> core::ops::Index<Id> for EGraph<L, N> {
 impl<L: Language, N: Analysis<L>> core::ops::IndexMut<Id> for EGraph<L, N> {
     fn index_mut(&mut self, id: Id) -> &mut Self::Output {
         let id = self.find_mut(id);
-        self.classes
-            .get_mut(&id)
-            .unwrap_or_else(|| panic!("Invalid id {}", id))
+        let class = self
+            .classes
+            .get_mut(id)
+            .unwrap_or_else(|| panic!("Invalid id {}", id));
+        // the caller may mutate `nodes`, invalidating the group index
+        class.discrim_groups.clear();
+        class
     }
 }
 
@@ -1012,30 +1029,47 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// assert_eq!(egraph.id_to_expr(fb), "(f a)".parse().unwrap());
     /// ```
     pub fn add_uncanonical(&mut self, mut enode: L) -> Id {
+        if self.explain.is_none() {
+            // Without explanations, `self.nodes` may hold the canonicalized node,
+            // which saves a clone.
+            enode.update_children(|id| self.unionfind.find_mut(id));
+            if let Some(&existing_id) = self.memo.get(&enode) {
+                return existing_id;
+            }
+            let id = self.make_new_eclass(enode.clone(), enode);
+            N::modify(self, id);
+            self.clean = false;
+            return id;
+        }
+
         let original = enode.clone();
         if let Some(existing_id) = self.lookup_internal(&mut enode) {
             let id = self.find(existing_id);
-            // when explanations are enabled, we need a new representative for this expr
-            if let Some(explain) = self.explain.as_mut() {
-                if let Some(existing_explain) = explain.uncanon_memo.get(&original) {
-                    *existing_explain
-                } else {
+            // we need a new representative for this expr
+            let explain = self.explain.as_mut().unwrap();
+            match explain.uncanon_memo.entry(original) {
+                crate::util::Entry::Occupied(existing_explain) => *existing_explain.get(),
+                crate::util::Entry::Vacant(vacancy) => {
                     let new_id = self.unionfind.make_set();
-                    explain.add(original.clone(), new_id);
+                    // Explain::add, inlined so the entry can be reused
+                    assert_eq!(explain.explainfind.len(), usize::from(new_id));
+                    explain
+                        .explainfind
+                        .push(crate::explain::ExplainNode::new_set(new_id));
                     debug_assert_eq!(Id::from(self.nodes.len()), new_id);
-                    self.nodes.push(original);
+                    self.nodes.push(vacancy.key().clone());
+                    vacancy.insert(new_id);
                     self.unionfind.union(id, new_id);
-                    explain.union(existing_id, new_id, Justification::Congruence);
+                    self.explain
+                        .as_mut()
+                        .unwrap()
+                        .union(existing_id, new_id, Justification::Congruence);
                     new_id
                 }
-            } else {
-                existing_id
             }
         } else {
             let id = self.make_new_eclass(enode, original.clone());
-            if let Some(explain) = self.explain.as_mut() {
-                explain.add(original, id);
-            }
+            self.explain.as_mut().unwrap().add(original, id);
 
             // now that we updated explanations, run the analysis for the new eclass
             N::modify(self, id);
@@ -1053,18 +1087,22 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             nodes: vec![enode.clone()],
             data: N::make(self, &original, id),
             parents: Default::default(),
+            discrim_groups: Vec::new(),
         };
 
         debug_assert_eq!(Id::from(self.nodes.len()), id);
         self.nodes.push(original);
 
-        // add this enode to the parent lists of its children
+        // add this enode to the parent lists of its children, which are
+        // canonical; pushing a parent keeps the group index, so skip `IndexMut`
         enode.for_each(|child| {
-            self[child].parents.push(id);
+            self.classes
+                .get_mut(child)
+                .unwrap_or_else(|| panic!("Invalid id {}", child))
+                .parents
+                .push(id);
         });
 
-        // TODO is this needed?
-        self.pending.push(id);
 
         self.classes.insert(id, class);
         assert!(self.memo.insert(enode, id).is_none());
@@ -1168,8 +1206,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             return false;
         }
         // make sure class2 has fewer parents
-        let class1_parents = self.classes[&id1].parents.len();
-        let class2_parents = self.classes[&id2].parents.len();
+        let class1_parents = self.classes[id1].parents.len();
+        let class2_parents = self.classes[id2].parents.len();
         if class1_parents < class2_parents {
             core::mem::swap(&mut id1, &mut id2);
         }
@@ -1182,9 +1220,8 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.unionfind.union(id1, id2);
 
         assert_ne!(id1, id2);
-        #[allow(deprecated)]
-        let class2 = self.classes.remove(&id2).unwrap();
-        let class1 = self.classes.get_mut(&id1).unwrap();
+        let class2 = self.classes.remove(id2).unwrap();
+        let class1 = self.classes.get_mut(id1).unwrap();
         assert_eq!(id1, class1.id);
 
         self.pending.extend(class2.parents.iter().copied());
@@ -1197,6 +1234,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             self.analysis_pending.extend(class2.parents.iter().copied());
         }
 
+        class1.discrim_groups.clear();
         concat_vecs(&mut class1.nodes, class2.nodes);
         concat_vecs(&mut class1.parents, class2.parents);
 
@@ -1211,7 +1249,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// called for other parts of the e-graph on rebuild.
     pub fn set_analysis_data(&mut self, id: Id, new_data: N::Data) {
         let id = self.find_mut(id);
-        let class = self.classes.get_mut(&id).unwrap();
+        let class = self.classes.get_mut(id).unwrap();
         class.data = new_data;
         self.analysis_pending.extend(class.parents.iter().copied());
         N::modify(self, id)
@@ -1286,17 +1324,32 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             };
 
             // we can go through the ops in order to dedup them, becaue we
-            // just sorted them
-            let mut nodes = class.nodes.iter();
-            if let Some(mut prev) = nodes.next() {
+            // just sorted them; the same pass records the start of each
+            // same-discriminant run for fast matching
+            use core::hash::BuildHasher as _;
+            let hasher = crate::util::BuildHasher::default();
+            let mut groups = core::mem::take(&mut class.discrim_groups);
+            groups.clear();
+            if let Some(first) = class.nodes.first() {
+                let mut prev = first;
+                let mut prev_discrim = first.discriminant();
+                groups.push((hasher.hash_one(&prev_discrim), 0));
                 add(prev);
-                for n in nodes {
-                    if !prev.matches(n) {
+                for (i, n) in class.nodes.iter().enumerate().skip(1) {
+                    let discrim = n.discriminant();
+                    if discrim != prev_discrim {
+                        // a discriminant change is always a `matches` change
+                        groups.push((hasher.hash_one(&discrim), i as u32));
+                        prev_discrim = discrim;
+                        add(n);
+                        prev = n;
+                    } else if !prev.matches(n) {
                         add(n);
                         prev = n;
                     }
                 }
             }
+            class.discrim_groups = groups;
         }
 
         #[cfg(debug_assertions)]
@@ -1313,7 +1366,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     fn check_memo(&self) -> bool {
         let mut test_memo = HashMap::default();
 
-        for (&id, class) in self.classes.iter() {
+        for (id, class) in self.classes.iter() {
             assert_eq!(class.id, id);
             for node in &class.nodes {
                 if let Some(old) = test_memo.insert(node, id) {
@@ -1362,7 +1415,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 let node = self.nodes[usize::from(class_id)].clone();
                 let class_id = self.find_mut(class_id);
                 let node_data = N::remake(self, &node, class_id);
-                let class = self.classes.get_mut(&class_id).unwrap();
+                let class = self.classes.get_mut(class_id).unwrap();
 
                 let did_merge =
                     crate::merge_data::<L, N>(&mut self.analysis, &mut class.data, node_data);
