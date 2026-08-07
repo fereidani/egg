@@ -116,8 +116,8 @@ ensure your cost function is still monotonic in this situation.
 **/
 pub trait CostFunction<L: Language> {
     /// The `Cost` type. It only requires `PartialOrd` so you can use
-    /// floating point types, but failed comparisons (`NaN`s) will
-    /// result in a panic.
+    /// floating point types, but costs must always compare: an [`Extractor`]
+    /// panics on incomparable costs (a `NaN`) rather than picking a winner.
     type Cost: PartialOrd + Debug + Clone;
 
     /// Calculates the cost of an enode whose children are `Cost`s.
@@ -193,7 +193,10 @@ fn cmp<T: PartialOrd>(a: &Option<T>, b: &Option<T>) -> Ordering {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Greater,
         (Some(_), None) => Ordering::Less,
-        (Some(a), Some(b)) => a.partial_cmp(b).unwrap(),
+        // a `NaN` cost means the cost function is broken
+        (Some(a), Some(b)) => a
+            .partial_cmp(b)
+            .expect("cost function produced incomparable costs (a NaN?)"),
     }
 }
 
@@ -300,13 +303,14 @@ where
     }
 
     fn make_pass(&mut self, eclass: &EClass<L, N::Data>) -> Option<(CF::Cost, usize)> {
+        // an empty class (unreachable through the API) is unextractable
+        debug_assert!(!eclass.nodes.is_empty(), "an e-class always has a node");
         let (cost, i) = eclass
             .nodes
             .iter()
             .enumerate()
             .map(|(i, n)| (self.node_total_cost(n), i))
-            .min_by(|a, b| cmp(&a.0, &b.0))
-            .unwrap_or_else(|| panic!("Can't extract, eclass is empty: {:#?}", eclass));
+            .min_by(|a, b| cmp(&a.0, &b.0))?;
         cost.map(|c| (c, i))
     }
 }
