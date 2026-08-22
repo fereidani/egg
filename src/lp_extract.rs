@@ -13,6 +13,10 @@ pub trait LpCostFunction<L: Language, N: Analysis<L>> {
     ///
     /// This function may look at other parts of the e-graph to compute the cost
     /// of the given e-node.
+    ///
+    /// The cost must be finite and non-negative, or the solver can profit from
+    /// activating classes the extracted term never reaches. [`LpExtractor::new`]
+    /// panics otherwise.
     fn node_cost(&mut self, egraph: &EGraph<L, N>, eclass: Id, enode: &L) -> f64;
 }
 
@@ -130,7 +134,13 @@ where
         for class in egraph.classes() {
             let mut node_costs = Vec::with_capacity(class.nodes.len());
             for node in &class.nodes {
-                node_costs.push(cost_function.node_cost(egraph, class.id, node));
+                let cost = cost_function.node_cost(egraph, class.id, node);
+                // see `LpCostFunction::node_cost`
+                assert!(
+                    cost.is_finite() && cost >= 0.0,
+                    "node cost must be finite and non-negative, got {cost}"
+                );
+                node_costs.push(cost);
             }
             costs.insert(class.id, node_costs);
         }
