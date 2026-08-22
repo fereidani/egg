@@ -61,12 +61,59 @@ const NO_CLASS: u32 = u32::MAX;
 /// `list`. Lookups are two array loads (no hashing), and iteration over the
 /// classes is a contiguous scan.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde-1", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde-1", derive(serde::Serialize))]
 pub(crate) struct ClassMap<L, D> {
     index: Vec<u32>,
     list: Vec<EClass<L, D>>,
 }
 
+/// Hand-written to validate untrusted input: `get` and `get_mut` assume every
+/// non-[`NO_CLASS`] slot is in bounds.
+#[cfg(feature = "serde-1")]
+impl<'de, L, D> serde::Deserialize<'de> for ClassMap<L, D>
+where
+    L: serde::Deserialize<'de>,
+    D: serde::Deserialize<'de>,
+{
+    fn deserialize<De>(deserializer: De) -> Result<Self, De::Error>
+    where
+        De: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        // same shape as the derived implementation
+        #[derive(serde::Deserialize)]
+        struct Fields<L, D> {
+            index: Vec<u32>,
+            list: Vec<EClass<L, D>>,
+        }
+
+        let Fields { index, list } = Fields::deserialize(deserializer)?;
+        if list.len() >= NO_CLASS as usize {
+            return Err(De::Error::custom("too many e-classes for the class map"));
+        }
+        // every occupied slot names the class at its position, which also makes
+        // the slots injective
+        for (id, &slot) in index.iter().enumerate() {
+            if slot == NO_CLASS {
+                continue;
+            }
+            let class = list
+                .get(slot as usize)
+                .ok_or_else(|| De::Error::custom("class map slot is out of range"))?;
+            if usize::from(class.id) != id {
+                return Err(De::Error::custom("class map slot names the wrong e-class"));
+            }
+        }
+        // and every class is reachable by its own id
+        for (position, class) in list.iter().enumerate() {
+            if index.get(usize::from(class.id)) != Some(&(position as u32)) {
+                return Err(De::Error::custom("class map is missing a slot"));
+            }
+        }
+        Ok(ClassMap { index, list })
+    }
+}
 
 impl<L, D> Default for ClassMap<L, D> {
     fn default() -> Self {
