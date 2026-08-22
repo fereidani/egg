@@ -569,11 +569,6 @@ where
                 .scheduler
                 .search_rewrites(i, &self.egraph, rules, &self.limits)?;
             Ok(())
-            // rules.iter().try_for_each(|rw| {
-            //     let ms = self.scheduler.search_rewrite(i, &self.egraph, rw);
-            //     matches.push(ms);
-            //     self.check_limits()
-            // })
         });
 
         let search_time = start_time.elapsed().as_secs_f64();
@@ -662,16 +657,18 @@ fn check_rules<L, N>(rules: &[&Rewrite<L, N>]) {
     }
 
     name_counts.retain(|_, count: &mut usize| *count > 1);
-    if !name_counts.is_empty() {
+    if name_counts.is_empty() {
+        return;
+    }
+
+    #[cfg(feature = "std")]
+    eprintln!("WARNING: Duplicated rule names may affect rule reporting and scheduling.");
+    log::warn!("Duplicated rule names may affect rule reporting and scheduling.");
+    for (name, &count) in name_counts.iter() {
+        debug_assert!(count > 1, "only duplicated names survive the retain");
         #[cfg(feature = "std")]
-        eprintln!("WARNING: Duplicated rule names may affect rule reporting and scheduling.");
-        log::warn!("Duplicated rule names may affect rule reporting and scheduling.");
-        for (name, &count) in name_counts.iter() {
-            debug_assert!(count > 1, "only duplicated names survive the retain");
-            #[cfg(feature = "std")]
-            eprintln!("Rule '{}' appears {} times", name, count);
-            log::warn!("Rule '{}' appears {} times", name, count);
-        }
+        eprintln!("Rule '{}' appears {} times", name, count);
+        log::warn!("Rule '{}' appears {} times", name, count);
     }
 }
 
@@ -800,7 +797,7 @@ where
 {
 }
 
-/// A [`RewriteScheduler`] that implements exponentional rule backoff.
+/// A [`RewriteScheduler`] that implements exponential rule backoff.
 ///
 /// For each rewrite, there exists a configurable initial match limit.
 /// If a rewrite search yield more than this limit, then we ban this
@@ -844,17 +841,15 @@ impl BackoffScheduler {
     }
 
     fn rule_stats(&mut self, name: Symbol) -> &mut RuleStats {
-        if self.stats.contains_key(&name) {
-            &mut self.stats[&name]
-        } else {
-            self.stats.entry(name).or_insert(RuleStats {
-                times_applied: 0,
-                banned_until: 0,
-                times_banned: 0,
-                match_limit: self.default_match_limit,
-                ban_length: self.default_ban_length,
-            })
-        }
+        let match_limit = self.default_match_limit;
+        let ban_length = self.default_ban_length;
+        self.stats.entry(name).or_insert_with(|| RuleStats {
+            times_applied: 0,
+            banned_until: 0,
+            times_banned: 0,
+            match_limit,
+            ban_length,
+        })
     }
 
     /// Never ban a particular rule.
@@ -892,17 +887,10 @@ fn saturating_shl(value: usize, shift: usize) -> usize {
     if value == 0 {
         return 0;
     }
-
-    // lossless while the shift fits in the leading zeros
-    let headroom = value.leading_zeros() as usize;
-    debug_assert!(
-        headroom < usize::BITS as usize,
-        "a nonzero value has a set bit"
-    );
-    if shift <= headroom {
-        let shifted = value << shift;
-        debug_assert_eq!(shifted >> shift, value, "the shift lost no bits");
-        shifted
+    // lossless while the shift fits in the leading zeros; `checked_shl` only
+    // rejects shifts past the word width
+    if shift <= value.leading_zeros() as usize {
+        value << shift
     } else {
         usize::MAX
     }
@@ -914,31 +902,22 @@ where
     N: Analysis<L>,
 {
     fn can_stop(&mut self, iteration: usize) -> bool {
-        let n_stats = self.stats.len();
-
-        let mut banned: Vec<_> = self
-            .stats
-            .iter_mut()
-            .filter(|(_, s)| s.banned_until > iteration)
-            .collect();
-
-        // `None`: nothing is banned, so the runner may stop
-        let Some(min_ban) = banned.iter().map(|(_, s)| s.banned_until).min() else {
+        let bans = self.stats.values().map(|s| s.banned_until);
+        let Some(min_ban) = bans.filter(|ban| *ban > iteration).min() else {
             return true;
         };
 
-        debug_assert!(
-            min_ban > iteration,
-            "a banned rule is banned into the future"
-        );
         let delta = min_ban.saturating_sub(iteration);
 
         let mut unbanned = vec![];
-        for (name, s) in &mut banned {
-            debug_assert!(s.banned_until >= min_ban, "min_ban is the minimum");
-            s.banned_until = s.banned_until.saturating_sub(delta);
-            if s.banned_until == iteration {
-                unbanned.push(name.as_str());
+        let mut banned = 0;
+        for (name, stats) in &mut self.stats {
+            if stats.banned_until > iteration {
+                banned += 1;
+                stats.banned_until = stats.banned_until.saturating_sub(delta);
+                if stats.banned_until == iteration {
+                    unbanned.push(name.as_str());
+                }
             }
         }
 
@@ -946,8 +925,8 @@ where
         debug_assert!(!unbanned.is_empty(), "the earliest ban always expires");
         info!(
             "Banned {}/{}, fast-forwarded by {} to unban {}",
-            banned.len(),
-            n_stats,
+            banned,
+            self.stats.len(),
             delta,
             unbanned.join(", "),
         );
@@ -974,25 +953,20 @@ where
         let threshold = saturating_shl(stats.match_limit, stats.times_banned);
         let matches = rewrite.search_with_limit(egraph, threshold.saturating_add(1));
         let total_len: usize = matches.iter().map(|m| m.substs.len()).sum();
-        if total_len > threshold {
-            let ban_length = saturating_shl(stats.ban_length, stats.times_banned);
-            // saturating: a ban count that high is already permanent
-            stats.times_banned = stats.times_banned.saturating_add(1);
-            stats.banned_until = iteration.saturating_add(ban_length);
-            info!(
-                "Banning {} ({}-{}) for {} iters: {} < {}",
-                rewrite.name,
-                stats.times_applied,
-                stats.times_banned,
-                ban_length,
-                threshold,
-                total_len,
-            );
-            vec![]
-        } else {
+        if total_len <= threshold {
             stats.times_applied += 1;
-            matches
+            return matches;
         }
+
+        let ban_length = saturating_shl(stats.ban_length, stats.times_banned);
+        // saturating: a ban count that high is already permanent
+        stats.times_banned = stats.times_banned.saturating_add(1);
+        stats.banned_until = iteration.saturating_add(ban_length);
+        info!(
+            "Banning {} ({}-{}) for {} iters: {} < {}",
+            rewrite.name, stats.times_applied, stats.times_banned, ban_length, threshold, total_len,
+        );
+        vec![]
     }
 }
 

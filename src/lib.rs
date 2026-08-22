@@ -4,7 +4,7 @@
 #![allow(clippy::test_attr_in_doctest)]
 /*!
 
-`egg` (**e**-**g**raphs **g**ood) is a e-graph library optimized for equality saturation.
+`egg` (**e**-**g**raphs **g**ood) is an e-graph library optimized for equality saturation.
 
 This is the API documentation.
 
@@ -36,7 +36,7 @@ extern crate alloc;
 
 /// Crate-internal prelude that re-exports `alloc` / `core` items normally
 /// provided by `std`.  Every module imports `use crate::no_std_prelude::*;`
-/// instead of scattering `#[allow(unused_imports)] use alloc::{…}` blocks.
+/// instead of scattering `#[allow(unused_imports)] use alloc::{...}` blocks.
 pub(crate) mod no_std_prelude {
     pub use alloc::{
         borrow::{Cow, ToOwned},

@@ -1,6 +1,5 @@
 use crate::no_std_prelude::*;
 use core::fmt::{self, Debug, Display, Formatter};
-use core::iter::FromIterator;
 
 use crate::sexp::Sexp;
 
@@ -118,29 +117,28 @@ pub(crate) fn pretty_print(
     level: usize,
 ) -> fmt::Result {
     use fmt::Write;
-    if let Sexp::List(list) = sexp {
-        let indent = sexp.to_string().len() > width;
-        write!(buf, "(")?;
+    let Sexp::List(list) = sexp else {
+        // I don't care about quotes
+        return write!(buf, "{}", sexp.to_string().trim_matches('"'));
+    };
 
-        for (i, val) in list.iter().enumerate() {
-            if indent && i > 0 {
-                writeln!(buf)?;
-                for _ in 0..level {
-                    write!(buf, "  ")?;
-                }
-            }
-            pretty_print(buf, val, width, level + 1)?;
-            if !indent && i < list.len() - 1 {
-                write!(buf, " ")?;
+    let indent = sexp.to_string().len() > width;
+    write!(buf, "(")?;
+
+    for (i, val) in list.iter().enumerate() {
+        if indent && i > 0 {
+            writeln!(buf)?;
+            for _ in 0..level {
+                write!(buf, "  ")?;
             }
         }
-
-        write!(buf, ")")?;
-        Ok(())
-    } else {
-        // I don't care about quotes
-        write!(buf, "{}", sexp.to_string().trim_matches('"'))
+        pretty_print(buf, val, width, level + 1)?;
+        if !indent && i < list.len() - 1 {
+            write!(buf, " ")?;
+        }
     }
+
+    write!(buf, ")")
 }
 
 /// A wrapper that uses display implementation as debug
@@ -198,9 +196,9 @@ where
     }
 
     pub fn pop(&mut self) -> Option<T> {
-        let res = self.queue.pop_front();
-        res.as_ref().map(|t| self.set.remove(t));
-        res
+        let value = self.queue.pop_front()?;
+        self.set.remove(&value);
+        Some(value)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -229,9 +227,7 @@ where
 {
     fn from_iter<T: IntoIterator<Item = A>>(iter: T) -> Self {
         let mut queue = UniqueQueue::default();
-        for t in iter {
-            queue.insert(t);
-        }
+        queue.extend(iter);
         queue
     }
 }
