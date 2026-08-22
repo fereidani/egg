@@ -67,6 +67,7 @@ pub(crate) struct ClassMap<L, D> {
     list: Vec<EClass<L, D>>,
 }
 
+
 impl<L, D> Default for ClassMap<L, D> {
     fn default() -> Self {
         ClassMap {
@@ -162,8 +163,7 @@ impl<L, D> core::ops::Index<Id> for ClassMap<L, D> {
     type Output = EClass<L, D>;
     #[inline]
     fn index(&self, id: Id) -> &Self::Output {
-        self.get(id)
-            .unwrap_or_else(|| panic!("Invalid id {}", id))
+        self.get(id).unwrap_or_else(|| panic!("Invalid id {}", id))
     }
 }
 
@@ -227,10 +227,7 @@ impl<L: Language, D> EClass<L, D> {
                     let run = &self.nodes[start..end];
                     return if node.is_leaf() {
                         // for a leaf, `matches` is equality: at most one match
-                        match run.binary_search(node) {
-                            Ok(i) => f(&run[i]),
-                            Err(_) => Ok(()),
-                        }
+                        run.binary_search(node).map_or(Ok(()), |i| f(&run[i]))
                     } else {
                         run.iter().filter(|n| node.matches(n)).try_for_each(f)
                     };
@@ -245,21 +242,16 @@ impl<L: Language, D> EClass<L, D> {
         } else if node.is_leaf() {
             debug_assert!(self.nodes.windows(2).all(|w| w[0] < w[1]));
             // for a leaf, `matches` is equality: binary search finds the only match
-            match self.nodes.binary_search(node) {
-                Ok(i) => f(&self.nodes[i]),
-                Err(_) => Ok(()),
-            }
+            self.nodes
+                .binary_search(node)
+                .map_or(Ok(()), |i| f(&self.nodes[i]))
         } else {
             debug_assert!(node.all(|id| id == Id::from(0)));
             debug_assert!(self.nodes.windows(2).all(|w| w[0] < w[1]));
             let mut start = self.nodes.binary_search(node).unwrap_or_else(|i| i);
             let discrim = node.discriminant();
-            while start > 0 {
-                if self.nodes[start - 1].discriminant() == discrim {
-                    start -= 1;
-                } else {
-                    break;
-                }
+            while start > 0 && self.nodes[start - 1].discriminant() == discrim {
+                start -= 1;
             }
             let mut matching = self.nodes[start..]
                 .iter()

@@ -15,29 +15,18 @@ impl UnionFind {
         id
     }
 
-    pub fn size(&self) -> usize {
-        self.parents.len()
-    }
-
-    fn parent(&self, query: Id) -> Id {
-        self.parents[usize::from(query)]
-    }
-
-    fn parent_mut(&mut self, query: Id) -> &mut Id {
-        &mut self.parents[usize::from(query)]
-    }
-
     pub fn find(&self, mut current: Id) -> Id {
-        while current != self.parent(current) {
-            current = self.parent(current)
+        while current != self.parents[usize::from(current)] {
+            current = self.parents[usize::from(current)];
         }
         current
     }
 
     pub fn find_mut(&mut self, mut current: Id) -> Id {
-        while current != self.parent(current) {
-            let grandparent = self.parent(self.parent(current));
-            *self.parent_mut(current) = grandparent;
+        while current != self.parents[usize::from(current)] {
+            let parent = self.parents[usize::from(current)];
+            let grandparent = self.parents[usize::from(parent)];
+            self.parents[usize::from(current)] = grandparent;
             current = grandparent;
         }
         current
@@ -45,7 +34,7 @@ impl UnionFind {
 
     /// Given two leader ids, unions the two eclasses making root1 the leader.
     pub fn union(&mut self, root1: Id, root2: Id) -> Id {
-        *self.parent_mut(root2) = root1;
+        self.parents[usize::from(root2)] = root1;
         root1
     }
 }

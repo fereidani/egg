@@ -217,20 +217,19 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
     /// By default, egg runs a greedy algorithm to reduce the size of resulting explanations (without complexity overhead).
     /// Use this function to turn this algorithm off.
-    pub fn without_explanation_length_optimization(mut self) -> Self {
-        if let Some(explain) = &mut self.explain {
-            explain.optimize_explanation_lengths = false;
-            self
-        } else {
-            panic!("Need to set explanations enabled before setting length optimization.");
-        }
+    pub fn without_explanation_length_optimization(self) -> Self {
+        self.set_explanation_length_optimization(false)
     }
 
     /// By default, egg runs a greedy algorithm to reduce the size of resulting explanations (without complexity overhead).
     /// Use this function to turn this algorithm on again if you have turned it off.
-    pub fn with_explanation_length_optimization(mut self) -> Self {
+    pub fn with_explanation_length_optimization(self) -> Self {
+        self.set_explanation_length_optimization(true)
+    }
+
+    fn set_explanation_length_optimization(mut self, enabled: bool) -> Self {
         if let Some(explain) = &mut self.explain {
-            explain.optimize_explanation_lengths = true;
+            explain.optimize_explanation_lengths = enabled;
             self
         } else {
             panic!("Need to set explanations enabled before setting length optimization.");
@@ -512,18 +511,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 self.id_to_expr(right)
             );
         }
-        if let Some(explain) = &mut self.explain {
-            explain.with_nodes(&self.nodes).explain_equivalence::<N>(
-                left,
-                right,
-                &mut self.unionfind,
-                &self.classes,
-            )
-        } else {
-            panic!(
-                "Use runner.with_explanations_enabled() or egraph.with_explanations_enabled() before running to get explanations."
-            )
-        }
+        self.explain_ids(left, right)
     }
 
     /// Get an explanation for why an expression matches a pattern.
@@ -542,6 +530,10 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 left_expr, right_pattern
             );
         }
+        self.explain_ids(left, right)
+    }
+
+    fn explain_ids(&mut self, left: Id, right: Id) -> Explanation<L> {
         if let Some(explain) = &mut self.explain {
             explain.with_nodes(&self.nodes).explain_equivalence::<N>(
                 left,
@@ -652,17 +644,17 @@ where
 
     /// Map an `EGraph` over `L` into an `EGraph` over `L2`.
     fn map_egraph(&self, src_egraph: EGraph<L, A>) -> EGraph<Self::L2, Self::A2> {
-        let kv_map = |(k, v): (L, Id)| (self.map_node(k), v);
+        let map_key = |(node, id): (L, Id)| (self.map_node(node), id);
         EGraph {
             analysis: self.map_analysis(src_egraph.analysis),
             explain: None,
             unionfind: src_egraph.unionfind,
-            memo: src_egraph.memo.into_iter().map(kv_map).collect(),
+            memo: src_egraph.memo.into_iter().map(map_key).collect(),
             pending: src_egraph.pending,
             nodes: src_egraph
                 .nodes
                 .into_iter()
-                .map(|x| self.map_node(x))
+                .map(|node| self.map_node(node))
                 .collect(),
             analysis_pending: src_egraph.analysis_pending,
             classes: src_egraph.classes.map(|eclass| self.map_eclass(eclass)),
@@ -857,16 +849,9 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Calling [`id_to_expr`](EGraph::id_to_expr) on this `Id` return a copy of `expr` when explanations are enabled
     pub fn add_expr_uncanonical(&mut self, expr: &RecExpr<L>) -> Id {
         let mut new_ids = Vec::with_capacity(expr.len());
-        let mut new_node_q = Vec::with_capacity(expr.len());
         for node in expr {
             let new_node = node.clone().map_children(|i| new_ids[usize::from(i)]);
-            let size_before = self.unionfind.size();
             let next_id = self.add_uncanonical(new_node);
-            if self.unionfind.size() > size_before {
-                new_node_q.push(true);
-            } else {
-                new_node_q.push(false);
-            }
             new_ids.push(next_id);
         }
         *new_ids.last().unwrap()
@@ -887,24 +872,15 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// instantiation of the pattern
     fn add_instantiation_noncanonical(&mut self, pat: &PatternAst<L>, subst: &Subst) -> Id {
         let mut new_ids = Vec::with_capacity(pat.len());
-        let mut new_node_q = Vec::with_capacity(pat.len());
         for node in pat {
             match node {
                 ENodeOrVar::Var(var) => {
                     let id = self.find(subst[*var]);
                     new_ids.push(id);
-                    new_node_q.push(false);
                 }
                 ENodeOrVar::ENode(node) => {
                     let new_node = node.clone().map_children(|i| new_ids[usize::from(i)]);
-                    let size_before = self.unionfind.size();
                     let next_id = self.add_uncanonical(new_node);
-                    if self.unionfind.size() > size_before {
-                        new_node_q.push(true);
-                    } else {
-                        new_node_q.push(false);
-                    }
-
                     new_ids.push(next_id);
                 }
             }
@@ -1060,10 +1036,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                     self.nodes.push(vacancy.key().clone());
                     vacancy.insert(new_id);
                     self.unionfind.union(id, new_id);
-                    self.explain
-                        .as_mut()
-                        .unwrap()
-                        .union(existing_id, new_id, Justification::Congruence);
+                    self.explain.as_mut().unwrap().union(
+                        existing_id,
+                        new_id,
+                        Justification::Congruence,
+                    );
                     new_id
                 }
             }
@@ -1102,8 +1079,6 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                 .parents
                 .push(id);
         });
-
-
         self.classes.insert(id, class);
         assert!(self.memo.insert(enode, id).is_none());
 
@@ -1341,12 +1316,11 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
                         // a discriminant change is always a `matches` change
                         groups.push((hasher.hash_one(&discrim), i as u32));
                         prev_discrim = discrim;
-                        add(n);
-                        prev = n;
-                    } else if !prev.matches(n) {
-                        add(n);
-                        prev = n;
+                    } else if prev.matches(n) {
+                        continue;
                     }
+                    add(n);
+                    prev = n;
                 }
             }
             class.discrim_groups = groups;
