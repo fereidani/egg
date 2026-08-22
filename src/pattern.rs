@@ -363,11 +363,16 @@ where
         for mat in matches {
             let sast = mat.ast.as_ref().map(|cow| cow.as_ref());
             for subst in &mat.substs {
-                let (id, did_something) = if egraph.are_explanations_enabled() {
-                    egraph.union_instantiations(sast.unwrap(), ast, subst, rule_name)
-                } else {
-                    let id = apply_pat(&mut id_buf, ast, egraph, subst);
-                    (id, egraph.union(id, mat.eclass))
+                // `SearchMatches::ast` is optional even with explanations on;
+                // without it, union as `apply_one` does
+                let (id, did_something) = match sast {
+                    Some(sast) if egraph.are_explanations_enabled() => {
+                        egraph.union_instantiations(sast, ast, subst, rule_name)
+                    }
+                    _ => {
+                        let id = apply_pat(&mut id_buf, ast, egraph, subst);
+                        (id, egraph.union(id, mat.eclass))
+                    }
                 };
 
                 if did_something {
