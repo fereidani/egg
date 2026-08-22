@@ -328,45 +328,31 @@ pub trait LanguageChildren {
     fn as_mut_slice(&mut self) -> &mut [Id];
 }
 
+#[rustfmt::skip]
 impl<const N: usize> LanguageChildren for [Id; N] {
-    fn len(&self) -> usize {
-        N
-    }
-
-    fn can_be_length(n: usize) -> bool {
-        n == N
-    }
-
-    fn from_vec(v: Vec<Id>) -> Self {
-        Self::try_from(v.as_slice()).unwrap()
-    }
-
-    fn as_slice(&self) -> &[Id] {
-        self
-    }
-
-    fn as_mut_slice(&mut self) -> &mut [Id] {
-        self
-    }
-}
-
-#[rustfmt::skip]
-impl LanguageChildren for Box<[Id]> {
-    fn len(&self) -> usize                   { <[Id]>::len(self) }
-    fn can_be_length(_: usize) -> bool       { true }
-    fn from_vec(v: Vec<Id>) -> Self          { v.into() }
+    fn len(&self) -> usize                   { N }
+    fn can_be_length(n: usize) -> bool       { n == N }
+    fn from_vec(v: Vec<Id>) -> Self          { Self::try_from(&v[..]).unwrap() }
     fn as_slice(&self) -> &[Id]              { self }
     fn as_mut_slice(&mut self) -> &mut [Id]  { self }
 }
 
-#[rustfmt::skip]
-impl LanguageChildren for Vec<Id> {
-    fn len(&self) -> usize                   { <[Id]>::len(self) }
-    fn can_be_length(_: usize) -> bool       { true }
-    fn from_vec(v: Vec<Id>) -> Self          { v }
-    fn as_slice(&self) -> &[Id]              { self }
-    fn as_mut_slice(&mut self) -> &mut [Id]  { self }
+macro_rules! impl_slice_children {
+    ($($ty:ty),* $(,)?) => {
+        $(
+            #[rustfmt::skip]
+            impl LanguageChildren for $ty {
+                fn len(&self) -> usize                   { <[Id]>::len(self) }
+                fn can_be_length(_: usize) -> bool       { true }
+                fn from_vec(v: Vec<Id>) -> Self          { v.into() }
+                fn as_slice(&self) -> &[Id]              { self }
+                fn as_mut_slice(&mut self) -> &mut [Id]  { self }
+            }
+        )*
+    };
 }
+
+impl_slice_children!(Box<[Id]>, Vec<Id>);
 
 #[rustfmt::skip]
 impl LanguageChildren for Id {
@@ -400,8 +386,7 @@ impl<L: Language + Display> serde::Serialize for RecExpr<L> {
     where
         S: serde::Serializer,
     {
-        let s = self.to_sexp().to_string();
-        serializer.serialize_str(&s)
+        serializer.serialize_str(&self.to_sexp().to_string())
     }
 }
 
@@ -576,8 +561,7 @@ impl<L: Language + Display> Display for RecExpr<L> {
         if self.nodes.is_empty() {
             Display::fmt("()", f)
         } else {
-            let s = self.to_sexp().to_string();
-            Display::fmt(&s, f)
+            Display::fmt(&self.to_sexp().to_string(), f)
         }
     }
 }
@@ -630,10 +614,8 @@ impl<L: Language + Display> RecExpr<L> {
     /// ".trim());
     /// ```
     pub fn pretty(&self, width: usize) -> String {
-        let sexp = self.to_sexp();
-
         let mut buf = String::new();
-        if pretty_print(&mut buf, &sexp, width, 1).is_err() {
+        if pretty_print(&mut buf, &self.to_sexp(), width, 1).is_err() {
             // unreachable: writing to a `String` cannot fail
             debug_assert!(false, "writing into a String cannot fail");
         }

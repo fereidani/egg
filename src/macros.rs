@@ -23,7 +23,7 @@ be added later.
 
 # Example
 
-The following macro invocation shows the the accepted forms of variants:
+The following macro invocation shows the accepted forms of variants:
 ```
 # use egg::*;
 define_language! {

@@ -150,12 +150,10 @@ impl core::ops::Index<Var> for Subst {
 
 impl Debug for Subst {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let len = self.vec.len();
         write!(f, "{{")?;
-        for i in 0..len {
-            let (var, id) = &self.vec[i];
+        for (i, (var, id)) in self.vec.iter().enumerate() {
             write!(f, "{}: {}", var, id)?;
-            if i < len - 1 {
+            if i + 1 != self.vec.len() {
                 write!(f, ", ")?;
             }
         }

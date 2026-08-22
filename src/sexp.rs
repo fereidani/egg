@@ -30,7 +30,7 @@ mod minimal {
         fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             match self {
                 Sexp::String(s) => {
-                    if s.contains(' ') || s.contains('(') || s.contains(')') || s.is_empty() {
+                    if s.is_empty() || s.contains([' ', '(', ')']) {
                         write!(f, "\"{}\"", s)
                     } else {
                         write!(f, "{}", s)
@@ -77,9 +77,7 @@ mod minimal {
     fn parse(input: &str) -> Result<Sexp, SexpError> {
         let input = input.trim();
         if input.is_empty() {
-            return Err(SexpError {
-                message: String::from("empty input"),
-            });
+            return Err(parse_error("empty input"));
         }
 
         let (sexp, rest) = parse_one(input)?;
@@ -87,18 +85,20 @@ mod minimal {
         if rest.is_empty() {
             Ok(sexp)
         } else {
-            Err(SexpError {
-                message: String::from("trailing input"),
-            })
+            Err(parse_error("trailing input"))
+        }
+    }
+
+    fn parse_error(message: &'static str) -> SexpError {
+        SexpError {
+            message: String::from(message),
         }
     }
 
     fn parse_one(input: &str) -> Result<(Sexp, &str), SexpError> {
         let input = input.trim_start();
         if input.is_empty() {
-            return Err(SexpError {
-                message: String::from("unexpected end of input"),
-            });
+            return Err(parse_error("unexpected end of input"));
         }
 
         if input.starts_with('(') {
@@ -107,9 +107,7 @@ mod minimal {
             loop {
                 rest = rest.trim_start();
                 if rest.is_empty() {
-                    return Err(SexpError {
-                        message: String::from("unclosed parenthesis"),
-                    });
+                    return Err(parse_error("unclosed parenthesis"));
                 }
                 if rest.starts_with(')') {
                     rest = &rest[1..];
@@ -125,11 +123,10 @@ mod minimal {
                 Ok((Sexp::List(items), rest))
             }
         } else if input.starts_with('"') {
-            let end = input[1..].find('"').ok_or_else(|| SexpError {
-                message: String::from("unclosed string"),
-            })? + 1;
-            let s = &input[1..end];
-            Ok((Sexp::String(String::from(s)), &input[end + 1..]))
+            let (s, rest) = input[1..]
+                .split_once('"')
+                .ok_or_else(|| parse_error("unclosed string"))?;
+            Ok((Sexp::String(String::from(s)), rest))
         } else {
             let end = input
                 .find(|c: char| c.is_whitespace() || c == '(' || c == ')')
