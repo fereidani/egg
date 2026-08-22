@@ -255,20 +255,17 @@ macro_rules! test_fn {
         $($goal:literal),+ $(,)?
         $(@check $check_fn:expr)?
     ) => {
-
-    $(#[$meta])*
-    #[test]
-    pub fn $name() {
-        // NOTE this is no longer needed, we always check
-        let check = true;
-        $crate::test::test_runner(
-            stringify!($name),
-            None $(.or(Some($runner)))?,
-            &$rules,
-            $start.parse().unwrap(),
-            &[$( $goal.parse().unwrap() ),+],
-            None $(.or(Some($check_fn)))?,
-            check,
-        )
-    }};
+        $(#[$meta])*
+        #[test]
+        pub fn $name() {
+            $crate::test::test_runner(
+                stringify!($name),
+                None $(.or(Some($runner)))?,
+                &$rules,
+                $start.parse().unwrap(),
+                &[$( $goal.parse().unwrap() ),+],
+                None $(.or(Some($check_fn)))?,
+                true,
+            )
+        }};
 }

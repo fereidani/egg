@@ -121,7 +121,7 @@ where
         CF: LpCostFunction<L, N>,
     {
         // Precompute costs per node and detect cyclic nodes once
-        let mut cyclic_nodes: HashSet<(Id, usize)> = Default::default();
+        let mut cyclic_nodes = HashSet::default();
         find_cycles(egraph, |id, i| {
             cyclic_nodes.insert((id, i));
         });
@@ -202,8 +202,7 @@ where
         let mut objective: Expression = 0.0.into();
         for class in egraph.classes() {
             for (i, &node_var) in vars[&class.id].nodes.iter().enumerate() {
-                let c = self.costs[&class.id][i];
-                objective += c * node_var;
+                objective += self.costs[&class.id][i] * node_var;
             }
         }
 
@@ -261,9 +260,9 @@ where
     }
 
     /// Extracts the solution from the solved model.
-    fn extract_solution<S: Solver>(
+    fn extract_solution<M: SolverModel>(
         &self,
-        solution: <S::Model as SolverModel>::Solution,
+        solution: M::Solution,
         vars: &HashMap<Id, ClassVars>,
         roots: &[Id],
     ) -> (RecExpr<L>, Vec<Id>) {
@@ -314,26 +313,7 @@ where
         let (mut model, vars) = self.build_ilp_model(solver);
         self.add_constraints::<S>(&mut model, &vars, roots);
 
-        log::info!("Solving using {}", <S as Solver>::name());
-        let start = Instant::now();
-        let solution = model
-            .solve()
-            .expect("good_lp failed to solve the ILP problem");
-        let duration = start.elapsed().as_secs_f64();
-        log::info!("Solution found in {:.2}s", duration);
-        match solution.status() {
-            SolutionStatus::Optimal => {
-                log::info!("Solution is optimal");
-            }
-            SolutionStatus::TimeLimit => {
-                log::warn!("Solver timed out, solution may not be optimal.");
-            }
-            SolutionStatus::GapLimit => {
-                log::info!("Solver reached gap limit, solution may not be optimal.");
-            }
-        };
-
-        self.extract_solution::<S>(solution, &vars, roots)
+        self.solve_model::<S>(model, &vars, roots)
     }
 
     /// Like [`LpExtractor::solve_multiple_with`], but lets the caller provide a time limit for the 'good_lp' solver in seconds.
@@ -347,24 +327,30 @@ where
     where
         <S as Solver>::Model: WithTimeLimit,
     {
-        let (model_build, vars) = self.build_ilp_model(solver);
+        let (model, vars) = self.build_ilp_model(solver);
 
         // Set timeout
-        let mut model = model_build.with_time_limit(timeout);
+        let mut model = model.with_time_limit(timeout);
 
         self.add_constraints::<S>(&mut model, &vars, roots);
 
+        self.solve_model::<S>(model, &vars, roots)
+    }
+
+    fn solve_model<S: Solver>(
+        &self,
+        model: S::Model,
+        vars: &HashMap<Id, ClassVars>,
+        roots: &[Id],
+    ) -> (RecExpr<L>, Vec<Id>) {
         log::info!("Solving using {}", <S as Solver>::name());
         let start = Instant::now();
         let solution = model
             .solve()
             .expect("good_lp failed to solve the ILP problem");
-        let duration = start.elapsed().as_secs_f64();
-        log::info!("Solution found in {:.2}s", duration);
+        log::info!("Solution found in {:.2}s", start.elapsed().as_secs_f64());
         match solution.status() {
-            SolutionStatus::Optimal => {
-                log::info!("Solution is optimal");
-            }
+            SolutionStatus::Optimal => log::info!("Solution is optimal"),
             SolutionStatus::TimeLimit => {
                 log::warn!("Solver timed out, solution may not be optimal.");
             }
@@ -373,7 +359,7 @@ where
             }
         };
 
-        self.extract_solution::<S>(solution, &vars, roots)
+        self.extract_solution::<S::Model>(solution, vars, roots)
     }
 }
 

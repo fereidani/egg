@@ -213,9 +213,8 @@ where
     /// performs the greedy search for cheapest representative of each
     /// eclass.
     pub fn new(egraph: &'a EGraph<L, N>, cost_function: CF) -> Self {
-        let costs = HashMap::default();
         let mut extractor = Extractor {
-            costs,
+            costs: HashMap::default(),
             egraph,
             cost_function,
         };
@@ -248,14 +247,14 @@ where
 
     fn node_total_cost(&mut self, node: &L) -> Option<CF::Cost> {
         let eg = &self.egraph;
-        let has_cost = |id| self.costs.contains_key(&eg.find(id));
-        if node.all(has_cost) {
-            let costs = &self.costs;
-            let cost_f = |id| costs[&eg.find(id)].0.clone();
-            Some(self.cost_function.cost(node, cost_f))
-        } else {
-            None
+        if !node.all(|id| self.costs.contains_key(&eg.find(id))) {
+            return None;
         }
+        let costs = &self.costs;
+        Some(
+            self.cost_function
+                .cost(node, |id| costs[&eg.find(id)].0.clone()),
+        )
     }
 
     fn find_costs(&mut self) {
