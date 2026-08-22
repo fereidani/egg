@@ -144,20 +144,67 @@ pub trait Language: Debug + Clone + Eq + Ord + Hash {
         F: FnMut(Id) -> Expr,
         Expr: AsRef<[Self]>,
     {
-        fn build<L: Language>(to: &mut RecExpr<L>, from: &[L]) -> Id {
-            debug_assert!(!from.is_empty(), "a child expression has a root node");
-            let last = from.last().unwrap().clone();
-            let new_node = last.map_children(|id| {
-                let i = usize::from(id) + 1;
-                build(to, &from[0..i])
-            });
-            to.add(new_node)
+        /// Step of the post-order walk in `build`: visit a node's children,
+        /// then copy the node itself.
+        enum Task {
+            Visit(usize),
+            Copy(usize),
+        }
+
+        // Copies `from`'s root into `to` and returns its id. Iterative, since the
+        // child expression can be arbitrarily deep.
+        fn build<L: Language>(
+            to: &mut RecExpr<L>,
+            from: &[L],
+            work: &mut Vec<Task>,
+            copied: &mut Vec<Id>,
+        ) -> Id {
+            assert!(!from.is_empty(), "a child expression has a root node");
+            work.clear();
+            copied.clear();
+            work.push(Task::Visit(from.len() - 1));
+            while let Some(task) = work.pop() {
+                match task {
+                    Task::Visit(i) => {
+                        work.push(Task::Copy(i));
+                        // Reversed so the children are copied left to right,
+                        // and bounded by `i` so the walk always terminates.
+                        for child in from[i].children().iter().rev() {
+                            let child = usize::from(*child);
+                            assert!(child < i, "a child expression node refers to a later node");
+                            work.push(Task::Visit(child));
+                        }
+                    }
+                    Task::Copy(i) => {
+                        let node = from[i].clone();
+                        // The children were copied just above, in order.
+                        let start = copied.len() - node.children().len();
+                        let mut next = start;
+                        let node = node.map_children(|_| {
+                            let id = copied[next];
+                            next += 1;
+                            id
+                        });
+                        copied.truncate(start);
+                        copied.push(to.add(node));
+                    }
+                }
+            }
+            debug_assert_eq!(copied.len(), 1, "the walk leaves only the root");
+            copied[0]
         }
 
         let mut expr = RecExpr::default();
-        let node = self
-            .clone()
-            .map_children(|id| build(&mut expr, child_recexpr(id).as_ref()));
+        let mut work = vec![];
+        let mut copied = vec![];
+        let node = self.clone().map_children(|id| {
+            build(
+                &mut expr,
+                child_recexpr(id).as_ref(),
+                &mut work,
+                &mut copied,
+            )
+        });
         expr.add(node);
         expr
     }
