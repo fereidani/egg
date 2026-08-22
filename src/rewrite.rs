@@ -43,7 +43,6 @@ where
         let mut d = f.debug_struct("Rewrite");
         d.field("name", &self.name);
 
-        // if let Some(pat) = Any::downcast_ref::<dyn Pattern<L>>(&self.searcher) {
         if let Some(pat) = self.searcher.get_pattern_ast() {
             d.field("searcher", &DisplayAsDebug(pat));
         } else {
@@ -74,10 +73,9 @@ impl<'a, L: Language, N: Analysis<L>> RewriteBorrow<'a, L, N> {
         let applier = Arc::new(applier);
 
         let bound_vars = searcher.vars();
-        for v in applier.vars() {
-            if !bound_vars.contains(&v) {
-                return Err(format!("Rewrite {} refers to unbound var {}", name, v));
-            }
+        let is_unbound = |v: &Var| !bound_vars.contains(v);
+        if let Some(v) = applier.vars().into_iter().find(is_unbound) {
+            return Err(format!("Rewrite {} refers to unbound var {}", name, v));
         }
 
         Ok(Self {
@@ -154,15 +152,14 @@ where
         if limit == 0 {
             break;
         }
-        match searcher.search_eclass_with_limit(egraph, eclass, limit) {
-            None => continue,
-            Some(m) => {
-                let len = m.substs.len();
-                assert!(len <= limit);
-                limit -= len;
-                ms.push(m);
-            }
-        }
+        let Some(m) = searcher.search_eclass_with_limit(egraph, eclass, limit) else {
+            continue;
+        };
+
+        let len = m.substs.len();
+        assert!(len <= limit);
+        limit -= len;
+        ms.push(m);
     }
     ms
 }
@@ -459,12 +456,12 @@ where
         searcher_ast: Option<&PatternAst<L>>,
         rule_name: Symbol,
     ) -> Vec<Id> {
-        if self.condition.check(egraph, eclass, subst) {
-            self.applier
-                .apply_one(egraph, eclass, subst, searcher_ast, rule_name)
-        } else {
-            vec![]
+        if !self.condition.check(egraph, eclass, subst) {
+            return vec![];
         }
+
+        self.applier
+            .apply_one(egraph, eclass, subst, searcher_ast, rule_name)
     }
 
     fn vars(&self) -> Vec<Var> {

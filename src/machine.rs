@@ -1,8 +1,7 @@
 use crate::no_std_prelude::*;
 use crate::*;
-use core::result;
 
-type Result = result::Result<(), ()>;
+type Result = core::result::Result<(), ()>;
 
 #[derive(Default)]
 struct Machine {
@@ -310,7 +309,6 @@ impl<L: Language> Program<L> {
         }
 
         let mut machine = Machine::default();
-        assert_eq!(machine.reg.len(), 0);
         machine.reg.push(egraph.find(eclass));
 
         let mut matches = Vec::new();

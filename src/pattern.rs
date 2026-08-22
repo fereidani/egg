@@ -1,5 +1,4 @@
 use crate::no_std_prelude::*;
-use core::convert::TryInto;
 use core::fmt::{self, Display};
 use core::{convert::TryFrom, str::FromStr};
 use fmt::Formatter;
@@ -22,10 +21,10 @@ use crate::*;
 /// thing.
 /// Here is a somewhat verbose formal-ish statement:
 /// Searching for a pattern in an egraph yields substitutions
-/// ([`Subst`]s) _s_ such that, for any _s'_—where instead of
+/// ([`Subst`]s) _s_ such that, for any _s'_ where instead of
 /// mapping a variables to an eclass as _s_ does, _s'_ maps
 /// a variable to an arbitrary expression represented by that
-/// eclass—_p[s']_ (the pattern under substitution _s'_) is also
+/// eclass, _p[s']_ (the pattern under substitution _s'_) is also
 /// represented by the egraph.
 ///
 /// As an [`Applier`], a [`Pattern`] performs the given substitution
@@ -323,15 +322,14 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
     ) -> Option<SearchMatches<'_, L>> {
         let substs = self.program.run_with_limit(egraph, eclass, limit);
         if substs.is_empty() {
-            None
-        } else {
-            let ast = Some(Cow::Borrowed(&self.ast));
-            Some(SearchMatches {
-                eclass,
-                substs,
-                ast,
-            })
+            return None;
         }
+
+        Some(SearchMatches {
+            eclass,
+            substs,
+            ast: Some(Cow::Borrowed(&self.ast)),
+        })
     }
 
     fn vars(&self) -> Vec<Var> {
@@ -360,21 +358,17 @@ where
         rule_name: Symbol,
     ) -> Vec<Id> {
         let mut added = vec![];
-        let mut id_buf = vec![0.into(); self.ast.len()];
+        let ast = &self.ast;
+        let mut id_buf = vec![0.into(); ast.len()];
         for mat in matches {
             let sast = mat.ast.as_ref().map(|cow| cow.as_ref());
             for subst in &mat.substs {
-                let did_something;
-                let id;
-                if egraph.are_explanations_enabled() {
-                    let (id_temp, did_something_temp) =
-                        egraph.union_instantiations(sast.unwrap(), &self.ast, subst, rule_name);
-                    did_something = did_something_temp;
-                    id = id_temp;
+                let (id, did_something) = if egraph.are_explanations_enabled() {
+                    egraph.union_instantiations(sast.unwrap(), ast, subst, rule_name)
                 } else {
-                    id = apply_pat(&mut id_buf, &self.ast, egraph, subst);
-                    did_something = egraph.union(id, mat.eclass);
-                }
+                    let id = apply_pat(&mut id_buf, ast, egraph, subst);
+                    (id, egraph.union(id, mat.eclass))
+                };
 
                 if did_something {
                     added.push(id)

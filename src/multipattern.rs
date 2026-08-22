@@ -2,6 +2,7 @@ use crate::no_std_prelude::*;
 use core::str::FromStr;
 use thiserror::Error;
 
+use crate::pattern::apply_pat;
 use crate::*;
 
 /// A set of open expressions bound to variables.
@@ -84,9 +85,7 @@ impl<L: Language + FromOp> FromStr for MultiPattern<L> {
                 continue;
             }
             let mut parts = split.split('=');
-            let vs: &str = parts
-                .next()
-                .ok_or_else(|| PatternAssignmentError(split.into()))?;
+            let vs = parts.next().unwrap_or("");
             let v: Var = vs.trim().parse().map_err(VariableError)?;
             let ps = parts
                 .map(|p| p.trim().parse())
@@ -101,6 +100,13 @@ impl<L: Language + FromOp> FromStr for MultiPattern<L> {
     }
 }
 
+fn pattern_var<L: Language>(node: &ENodeOrVar<L>) -> Option<Var> {
+    match node {
+        ENodeOrVar::Var(var) => Some(*var),
+        ENodeOrVar::ENode(_) => None,
+    }
+}
+
 impl<L: Language, A: Analysis<L>> Searcher<L, A> for MultiPattern<L> {
     fn search_eclass_with_limit(
         &self,
@@ -108,38 +114,34 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for MultiPattern<L> {
         eclass: Id,
         limit: usize,
     ) -> Option<SearchMatches<'_, L>> {
-        match self.asts.as_slice() {
-            [] => panic!("empty multipattern"),
-            [(_var, pat), ..] => {
-                if let [ENodeOrVar::Var(_)] = **pat {
-                    panic!(
-                        "Bare cannot be first pattern variable in multipattern: {:?}",
-                        self.asts
-                    )
-                }
-            }
+        let Some((_, first_pat)) = self.asts.first() else {
+            panic!("empty multipattern")
+        };
+
+        if matches!(&**first_pat, [ENodeOrVar::Var(_)]) {
+            panic!(
+                "Bare cannot be first pattern variable in multipattern: {:?}",
+                self.asts
+            );
         }
+
         let substs = self.program.run_with_limit(egraph, eclass, limit);
         if substs.is_empty() {
-            None
-        } else {
-            Some(SearchMatches {
-                eclass,
-                substs,
-                ast: None,
-            })
+            return None;
         }
+
+        Some(SearchMatches {
+            eclass,
+            substs,
+            ast: None,
+        })
     }
 
     fn vars(&self) -> Vec<Var> {
         let mut vars = vec![];
-        for (v, pat) in &self.asts {
-            vars.push(*v);
-            for n in pat {
-                if let ENodeOrVar::Var(v) = n {
-                    vars.push(*v)
-                }
-            }
+        for (bound, pat) in &self.asts {
+            vars.push(*bound);
+            vars.extend(pat.iter().filter_map(pattern_var));
         }
         vars.sort();
         vars.dedup();
@@ -168,18 +170,19 @@ impl<L: Language, A: Analysis<L>> Applier<L, A> for MultiPattern<L> {
         // TODO explanations?
         // the ids returned are kinda garbage
         let mut added = vec![];
+        let mut id_buf = vec![];
         for mat in matches {
             for subst in &mat.substs {
                 let mut subst = subst.clone();
-                let mut id_buf = vec![];
                 for (i, (v, p)) in self.asts.iter().enumerate() {
+                    id_buf.clear();
                     id_buf.resize(p.len(), 0.into());
-                    let id1 = crate::pattern::apply_pat(&mut id_buf, p, egraph, &subst);
-                    if let Some(id2) = subst.insert(*v, id1) {
-                        egraph.union(id1, id2);
+                    let id = apply_pat(&mut id_buf, p, egraph, &subst);
+                    if let Some(existing_id) = subst.insert(*v, id) {
+                        egraph.union(id, existing_id);
                     }
                     if i == 0 {
-                        added.push(id1)
+                        added.push(id)
                     }
                 }
             }
@@ -190,16 +193,14 @@ impl<L: Language, A: Analysis<L>> Applier<L, A> for MultiPattern<L> {
     fn vars(&self) -> Vec<Var> {
         let mut bound_vars = HashSet::default();
         let mut vars = vec![];
-        for (bv, pat) in &self.asts {
-            for n in pat {
-                if let ENodeOrVar::Var(v) = n {
-                    // using vars that are already bound doesn't count
-                    if !bound_vars.contains(v) {
-                        vars.push(*v)
-                    }
-                }
-            }
-            bound_vars.insert(bv);
+        for (bound_var, pat) in &self.asts {
+            // Using vars that are already bound doesn't count.
+            let fresh = pat
+                .iter()
+                .filter_map(pattern_var)
+                .filter(|v| !bound_vars.contains(v));
+            vars.extend(fresh);
+            bound_vars.insert(*bound_var);
         }
         vars.sort();
         vars.dedup();
