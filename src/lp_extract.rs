@@ -287,11 +287,12 @@ where
                 continue;
             }
             let v = &vars[&id];
-            assert!(solution.value(v.active) > 0.0);
+            // binary variables, but solvers return approximate values
+            assert!(solution.value(v.active) > 0.5);
             let node_idx = v
                 .nodes
                 .iter()
-                .position(|&n| solution.value(n) > 0.0)
+                .position(|&n| solution.value(n) > 0.5)
                 .unwrap();
             let node = &self.egraph[id].nodes[node_idx];
             if node.all(|child| ids.contains_key(&child)) {
