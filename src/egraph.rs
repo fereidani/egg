@@ -1,3 +1,4 @@
+use crate::eclass::ANY_DISCRIMINANT;
 use crate::no_std_prelude::*;
 use crate::*;
 use core::{
@@ -135,6 +136,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     // `inspect` can't mutate through its shared reference, so `map` it is
     #[allow(clippy::manual_inspect)]
     pub fn classes_mut(&mut self) -> impl ExactSizeIterator<Item = &mut EClass<L, N::Data>> {
+        self.classes.clear_signatures();
         self.classes.values_mut().map(|class| {
             // the caller may mutate `nodes`, invalidating the group index
             class.discrim_groups.clear();
@@ -814,11 +816,13 @@ impl<L: Language, N: Analysis<L>> core::ops::Index<Id> for EGraph<L, N> {
 impl<L: Language, N: Analysis<L>> core::ops::IndexMut<Id> for EGraph<L, N> {
     fn index_mut(&mut self, id: Id) -> &mut Self::Output {
         let id = self.find_mut(id);
+        // the caller may mutate `nodes`, invalidating the signature and the
+        // group index
+        self.classes.set_signature(id, ANY_DISCRIMINANT);
         let class = self
             .classes
             .get_mut(id)
             .unwrap_or_else(|| panic!("Invalid id {}", id));
-        // the caller may mutate `nodes`, invalidating the group index
         class.discrim_groups.clear();
         class
     }
@@ -1218,6 +1222,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         class1.discrim_groups.clear();
         concat_vecs(&mut class1.nodes, class2.nodes);
         concat_vecs(&mut class1.parents, class2.parents);
+        self.classes.set_signature(id1, ANY_DISCRIMINANT);
 
         N::modify(self, id1);
         true
@@ -1286,7 +1291,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         let mut trimmed = 0;
         let uf = &mut self.unionfind;
 
-        for class in self.classes.values_mut() {
+        self.classes.update_each(|class| {
             let old_len = class.len();
             class
                 .nodes
@@ -1297,40 +1302,14 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
 
             trimmed += old_len - class.nodes.len();
 
-            let mut add = |n: &L| {
+            let class_id = class.id;
+            class.index_discriminants(|discrim| {
                 classes_by_op
-                    .entry(n.discriminant())
+                    .entry(discrim.clone())
                     .or_default()
-                    .insert(class.id)
-            };
-
-            // we can go through the ops in order to dedup them, becaue we
-            // just sorted them; the same pass records the start of each
-            // same-discriminant run for fast matching
-            use core::hash::BuildHasher as _;
-            let hasher = crate::util::BuildHasher::default();
-            let mut groups = core::mem::take(&mut class.discrim_groups);
-            groups.clear();
-            if let Some(first) = class.nodes.first() {
-                let mut prev = first;
-                let mut prev_discrim = first.discriminant();
-                groups.push((hasher.hash_one(&prev_discrim), 0));
-                add(prev);
-                for (i, n) in class.nodes.iter().enumerate().skip(1) {
-                    let discrim = n.discriminant();
-                    if discrim != prev_discrim {
-                        // a discriminant change is always a `matches` change
-                        groups.push((hasher.hash_one(&discrim), i as u32));
-                        prev_discrim = discrim;
-                    } else if prev.matches(n) {
-                        continue;
-                    }
-                    add(n);
-                    prev = n;
-                }
-            }
-            class.discrim_groups = groups;
-        }
+                    .insert(class_id);
+            })
+        });
 
         #[cfg(debug_assertions)]
         for ids in classes_by_op.values_mut() {

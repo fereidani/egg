@@ -1,3 +1,4 @@
+use crate::eclass::{discriminant_hash, signature_bit};
 use crate::no_std_prelude::*;
 use crate::*;
 
@@ -20,12 +21,28 @@ pub struct Program<L> {
     subst: Subst,
 }
 
+// `Bind`'s `hash` and `bit` are the `discriminant_hash` and `signature_bit`
+// of `node`'s discriminant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Instruction<L> {
-    Bind { node: L, i: Reg, out: Reg },
-    Compare { i: Reg, j: Reg },
-    Lookup { term: Vec<ENodeOrReg<L>>, i: Reg },
-    Scan { out: Reg },
+    Bind {
+        node: L,
+        i: Reg,
+        out: Reg,
+        hash: u64,
+        bit: u32,
+    },
+    Compare {
+        i: Reg,
+        j: Reg,
+    },
+    Lookup {
+        term: Vec<ENodeOrReg<L>>,
+        i: Reg,
+    },
+    Scan {
+        out: Reg,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,10 +73,22 @@ impl Machine {
         let mut instructions = instructions.iter();
         while let Some(instruction) = instructions.next() {
             match instruction {
-                Instruction::Bind { i, out, node } => {
+                Instruction::Bind {
+                    i,
+                    out,
+                    node,
+                    hash,
+                    bit,
+                } => {
+                    let id = self.reg(*i);
+                    // most binds fail, and the signature rejects them without
+                    // loading the class
+                    if egraph.classes.signature(id) & bit == 0 {
+                        return Ok(());
+                    }
                     let remaining_instructions = instructions.as_slice();
-                    let eclass = egraph.class_by_canonical_id(self.reg(*i));
-                    return eclass.for_each_matching_node(node, |matched| {
+                    let eclass = egraph.class_by_canonical_id(id);
+                    return eclass.for_each_matching_node_hashed(node, *hash, |matched| {
                         self.reg.truncate(out.0 as usize);
                         matched.for_each(|id| self.reg.push(id));
                         self.run(egraph, remaining_instructions, subst, yield_fn)
@@ -252,10 +281,13 @@ impl<L: Language> Compiler<L> {
 
                 // zero out the children so Bind can use it to sort
                 let op = node.clone().map_children(|_| Id::from(0));
+                let hash = discriminant_hash(&op.discriminant());
                 self.instructions.push(Instruction::Bind {
                     i: reg,
                     node: op,
                     out,
+                    hash,
+                    bit: signature_bit(hash),
                 });
 
                 for (i, &child) in node.children().iter().enumerate() {

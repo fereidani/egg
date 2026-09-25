@@ -51,8 +51,80 @@ impl<L, D> EClass<L, D> {
     }
 }
 
-/// Slot value in [`ClassMap::index`] marking an id with no e-class.
+/// Hash of a discriminant, as used by group indexes and signatures.
+#[inline]
+pub(crate) fn discriminant_hash<T: core::hash::Hash>(discriminant: &T) -> u64 {
+    let mut hasher = DiscriminantHasher(0);
+    discriminant.hash(&mut hasher);
+    core::hash::Hasher::finish(&hasher)
+}
+
+/// Folds the written integers and multiplies by the golden ratio (Fibonacci
+/// hashing). A discriminant is usually one small integer; distinct ones get
+/// distinct hashes, and up to 20 consecutive ones distinct [`signature_bit`]s.
+struct DiscriminantHasher(u64);
+
+impl core::hash::Hasher for DiscriminantHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(u64::from(i));
+    }
+
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(u64::from(i));
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = self.0.rotate_left(5) ^ i;
+    }
+
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+}
+
+/// Position value in a [`Slot`] marking an id with no e-class.
 const NO_CLASS: u32 = u32::MAX;
+
+/// Signature that rules nothing out; see [`ClassMap::signature`].
+pub(crate) const ANY_DISCRIMINANT: u32 = u32::MAX;
+
+/// Maps a [`discriminant_hash`] to its bit in a class signature.
+#[inline]
+pub(crate) fn signature_bit(discriminant_hash: u64) -> u32 {
+    1 << (discriminant_hash >> 59)
+}
+
+/// One entry of [`ClassMap::index`].
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    /// Position of the class in [`ClassMap::list`], or [`NO_CLASS`].
+    pos: u32,
+    /// See [`ClassMap::signature`].
+    sig: u32,
+}
+
+impl Slot {
+    const EMPTY: Slot = Slot {
+        pos: NO_CLASS,
+        sig: ANY_DISCRIMINANT,
+    };
+}
 
 /// Maps canonical [`Id`]s to [`EClass`]es.
 ///
@@ -60,11 +132,45 @@ const NO_CLASS: u32 = u32::MAX;
 /// hash map this is a slot map: `index` maps an id to a slot in the dense
 /// `list`. Lookups are two array loads (no hashing), and iteration over the
 /// classes is a contiguous scan.
+///
+/// Each slot also holds a signature of its class's discriminants, so
+/// e-matching can reject a class without loading it.
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "serde-1", derive(serde::Serialize))]
 pub(crate) struct ClassMap<L, D> {
-    index: Vec<u32>,
+    index: Vec<Slot>,
     list: Vec<EClass<L, D>>,
+}
+
+/// Hand-written to keep the derived format: `index` holds only positions, as
+/// `EGraph::rebuild` recomputes the signatures.
+#[cfg(feature = "serde-1")]
+impl<L, D> serde::Serialize for ClassMap<L, D>
+where
+    L: serde::Serialize,
+    D: serde::Serialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct as _;
+
+        struct Positions<'a>(&'a [Slot]);
+
+        impl serde::Serialize for Positions<'_> {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.collect_seq(self.0.iter().map(|slot| slot.pos))
+            }
+        }
+
+        let mut state = serializer.serialize_struct("ClassMap", 2)?;
+        state.serialize_field("index", &Positions(&self.index))?;
+        state.serialize_field("list", &self.list)?;
+        state.end()
+    }
 }
 
 /// Hand-written to validate untrusted input: `get` and `get_mut` assume every
@@ -81,7 +187,7 @@ where
     {
         use serde::de::Error as _;
 
-        // same shape as the derived implementation
+        // Same shape as `serialize` writes.
         #[derive(serde::Deserialize)]
         struct Fields<L, D> {
             index: Vec<u32>,
@@ -94,12 +200,12 @@ where
         }
         // every occupied slot names the class at its position, which also makes
         // the slots injective
-        for (id, &slot) in index.iter().enumerate() {
-            if slot == NO_CLASS {
+        for (id, &pos) in index.iter().enumerate() {
+            if pos == NO_CLASS {
                 continue;
             }
             let class = list
-                .get(slot as usize)
+                .get(pos as usize)
                 .ok_or_else(|| De::Error::custom("class map slot is out of range"))?;
             if usize::from(class.id) != id {
                 return Err(De::Error::custom("class map slot names the wrong e-class"));
@@ -111,6 +217,14 @@ where
                 return Err(De::Error::custom("class map is missing a slot"));
             }
         }
+        // Signatures are not serialized.
+        let index = index
+            .into_iter()
+            .map(|pos| Slot {
+                pos,
+                sig: ANY_DISCRIMINANT,
+            })
+            .collect();
         Ok(ClassMap { index, list })
     }
 }
@@ -131,47 +245,76 @@ impl<L, D> ClassMap<L, D> {
 
     #[inline]
     pub(crate) fn get(&self, id: Id) -> Option<&EClass<L, D>> {
-        let slot = *self.index.get(usize::from(id))?;
-        if slot == NO_CLASS {
+        let pos = self.index.get(usize::from(id))?.pos;
+        if pos == NO_CLASS {
             return None;
         }
-        // SAFETY: every non-NO_CLASS slot in `index` is a valid position in
-        // `list`: `insert` writes `list.len()` right before pushing, and
-        // `remove` rewrites the slot of the element it swaps into place.
-        unsafe { branches::assume((slot as usize) < self.list.len()) };
-        Some(&self.list[slot as usize])
+        // SAFETY: every non-NO_CLASS position in `index` is a valid position
+        // in `list`: `insert` writes `list.len()` right before pushing, and
+        // `remove` rewrites the position of the element it swaps into place.
+        unsafe { branches::assume((pos as usize) < self.list.len()) };
+        Some(&self.list[pos as usize])
     }
 
     #[inline]
     pub(crate) fn get_mut(&mut self, id: Id) -> Option<&mut EClass<L, D>> {
-        let slot = *self.index.get(usize::from(id))?;
-        if slot == NO_CLASS {
+        let pos = self.index.get(usize::from(id))?.pos;
+        if pos == NO_CLASS {
             return None;
         }
         // SAFETY: see `get`
-        unsafe { branches::assume((slot as usize) < self.list.len()) };
-        Some(&mut self.list[slot as usize])
+        unsafe { branches::assume((pos as usize) < self.list.len()) };
+        Some(&mut self.list[pos as usize])
+    }
+
+    /// Bloom filter over the discriminants in the class of `id`: each one's
+    /// [`signature_bit`] is set. Exact while the class's group index is valid;
+    /// [`ANY_DISCRIMINANT`] otherwise, and for ids without a class.
+    #[inline]
+    pub(crate) fn signature(&self, id: Id) -> u32 {
+        self.index
+            .get(usize::from(id))
+            .map_or(ANY_DISCRIMINANT, |slot| slot.sig)
+    }
+
+    /// Sets the signature of the class of `id`, if it has one.
+    pub(crate) fn set_signature(&mut self, id: Id, sig: u32) {
+        if let Some(slot) = self.index.get_mut(usize::from(id))
+            && slot.pos != NO_CLASS
+        {
+            slot.sig = sig;
+        }
+    }
+
+    /// Resets every signature to [`ANY_DISCRIMINANT`].
+    pub(crate) fn clear_signatures(&mut self) {
+        for slot in &mut self.index {
+            slot.sig = ANY_DISCRIMINANT;
+        }
     }
 
     pub(crate) fn insert(&mut self, id: Id, class: EClass<L, D>) {
         let i = usize::from(id);
         if i >= self.index.len() {
-            self.index.resize(i + 1, NO_CLASS);
+            self.index.resize(i + 1, Slot::EMPTY);
         }
-        debug_assert_eq!(self.index[i], NO_CLASS, "double insert for {id}");
+        debug_assert_eq!(self.index[i].pos, NO_CLASS, "double insert for {id}");
         assert!(self.list.len() < NO_CLASS as usize);
-        self.index[i] = self.list.len() as u32;
+        self.index[i] = Slot {
+            pos: self.list.len() as u32,
+            sig: ANY_DISCRIMINANT,
+        };
         self.list.push(class);
     }
 
     pub(crate) fn remove(&mut self, id: Id) -> Option<EClass<L, D>> {
-        let slot = core::mem::replace(self.index.get_mut(usize::from(id))?, NO_CLASS);
-        if slot == NO_CLASS {
+        let slot = core::mem::replace(self.index.get_mut(usize::from(id))?, Slot::EMPTY);
+        if slot.pos == NO_CLASS {
             return None;
         }
-        let class = self.list.swap_remove(slot as usize);
-        if let Some(moved) = self.list.get(slot as usize) {
-            self.index[usize::from(moved.id)] = slot;
+        let class = self.list.swap_remove(slot.pos as usize);
+        if let Some(moved) = self.list.get(slot.pos as usize) {
+            self.index[usize::from(moved.id)].pos = slot.pos;
         }
         Some(class)
     }
@@ -192,17 +335,28 @@ impl<L, D> ClassMap<L, D> {
         self.list.iter_mut()
     }
 
+    /// Calls `f` on every class and makes its result the class's signature.
+    pub(crate) fn update_each(&mut self, mut f: impl FnMut(&mut EClass<L, D>) -> u32) {
+        for class in &mut self.list {
+            let sig = f(class);
+            self.index[usize::from(class.id)].sig = sig;
+        }
+    }
+
     /// Maps every class into a new `ClassMap`, preserving ids.
     ///
-    /// The mapping function must keep [`EClass::id`] unchanged.
+    /// The mapping function must keep [`EClass::id`] unchanged. Signatures are
+    /// reset, as the new language has other discriminants.
     pub(crate) fn map<L2, D2>(
         self,
         f: impl FnMut(EClass<L, D>) -> EClass<L2, D2>,
     ) -> ClassMap<L2, D2> {
-        ClassMap {
+        let mut map = ClassMap {
             index: self.index,
             list: self.list.into_iter().map(f).collect(),
-        }
+        };
+        map.clear_signatures();
+        map
     }
 }
 
@@ -240,6 +394,21 @@ impl<L: Language, D> EClass<L, D> {
     pub fn for_each_matching_node<Err>(
         &self,
         node: &L,
+        f: impl FnMut(&L) -> Result<(), Err>,
+    ) -> Result<(), Err>
+    where
+        L: Language,
+    {
+        let query_hash = discriminant_hash(&node.discriminant());
+        self.for_each_matching_node_hashed(node, query_hash, f)
+    }
+
+    /// [`EClass::for_each_matching_node`], given the [`discriminant_hash`] of
+    /// `node`'s discriminant.
+    pub(crate) fn for_each_matching_node_hashed<Err>(
+        &self,
+        node: &L,
+        query_hash: u64,
         mut f: impl FnMut(&L) -> Result<(), Err>,
     ) -> Result<(), Err>
     where
@@ -249,15 +418,13 @@ impl<L: Language, D> EClass<L, D> {
             // Fresh from a rebuild: `nodes` is sorted and `discrim_groups` indexes
             // its same-discriminant runs. Find the run by hash, re-check its head
             // node against collisions, and scan only that run.
-            use core::hash::BuildHasher;
             let discrim = node.discriminant();
-            let query_hash = crate::util::BuildHasher::default().hash_one(&discrim);
             let groups = &self.discrim_groups;
             for (i, &(hash, start)) in groups.iter().enumerate() {
                 if hash == query_hash {
                     let start = start as usize;
                     // SAFETY: a non-empty group index is in sync with `nodes`:
-                    // `rebuild_classes` builds it from in-bounds, strictly
+                    // `index_discriminants` builds it from in-bounds, strictly
                     // increasing positions, and every path that can mutate
                     // `nodes` outside a rebuild clears it (`perform_union`
                     // internally; `classes_mut` / `IndexMut` for user code).
@@ -319,5 +486,34 @@ impl<L: Language, D> EClass<L, D> {
             );
             matching.try_for_each(&mut f)
         }
+    }
+
+    /// Rebuilds the group index over the sorted, deduplicated `nodes` and
+    /// returns the class's signature, calling `each_discriminant` once per run
+    /// of equal discriminants.
+    pub(crate) fn index_discriminants(
+        &mut self,
+        mut each_discriminant: impl FnMut(&L::Discriminant),
+    ) -> u32
+    where
+        L: Language,
+    {
+        let mut groups = core::mem::take(&mut self.discrim_groups);
+        groups.clear();
+        let mut sig = 0;
+        let mut prev: Option<L::Discriminant> = None;
+        for (i, n) in self.nodes.iter().enumerate() {
+            let discrim = n.discriminant();
+            if prev.as_ref() == Some(&discrim) {
+                continue;
+            }
+            let hash = discriminant_hash(&discrim);
+            groups.push((hash, i as u32));
+            sig |= signature_bit(hash);
+            each_discriminant(&discrim);
+            prev = Some(discrim);
+        }
+        self.discrim_groups = groups;
+        sig
     }
 }
