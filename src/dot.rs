@@ -219,7 +219,7 @@ where
                             f,
                             // {}.0 to pick an arbitrary node in the cluster
                             "  {}.{}{} -> {}.0 [lhead = cluster_{}, {}]",
-                            class.id, i_in_class, anchor, child, child_leader, label
+                            class.id, i_in_class, anchor, child_leader, child_leader, label
                         )?;
                     }
                     arg_i += 1;
