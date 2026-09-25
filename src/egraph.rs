@@ -920,6 +920,12 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
         self.lookup_internal(enode).map(|id| self.find(id))
     }
 
+    /// [`EGraph::lookup`] for an enode whose children are already canonical.
+    pub(crate) fn lookup_canonical(&self, enode: &L) -> Option<Id> {
+        debug_assert!(enode.all(|id| self.find(id) == id));
+        self.memo.get(enode).map(|&id| self.find(id))
+    }
+
     fn lookup_internal<B>(&self, mut enode: B) -> Option<Id>
     where
         B: BorrowMut<L>,

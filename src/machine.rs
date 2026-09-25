@@ -85,7 +85,8 @@ impl Machine {
                         match node {
                             ENodeOrReg::ENode(node) => {
                                 let look = |i| self.lookup[usize::from(i)];
-                                match egraph.lookup(node.clone().map_children(look)) {
+                                let node = node.clone().map_children(look);
+                                match egraph.lookup_canonical(&node) {
                                     Some(id) => self.lookup.push(id),
                                     None => return Ok(()),
                                 }
