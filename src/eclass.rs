@@ -24,7 +24,7 @@ pub struct EClass<L, D> {
     /// vector: `(group_hash of the discriminant, start offset of the run)`,
     /// in node order. Rebuilt by `EGraph::rebuild` and cleared whenever the
     /// class is mutated outside of a rebuild. Empty means "no index" and all
-    /// queries fall back to scanning/searching `nodes` directly.
+    /// queries fall back to scanning `nodes`.
     #[cfg_attr(feature = "serde-1", serde(skip))]
     pub(crate) discrim_groups: DiscrimGroups,
 }
@@ -426,8 +426,8 @@ impl<L: Language, D> EClass<L, D> {
     {
         if !self.discrim_groups.is_empty() {
             // Fresh from a rebuild: `nodes` is sorted and `discrim_groups` indexes
-            // its same-discriminant runs. Find the run by hash, re-check its head
-            // node against collisions, and scan only that run.
+            // its same-discriminant runs, one per discriminant. Find the run by
+            // hash, re-check its head node against collisions, and scan only that run.
             let discrim = node.discriminant();
             let query_hash = group_hash(query_hash);
             let groups = &self.discrim_groups;
@@ -459,49 +459,21 @@ impl<L: Language, D> EClass<L, D> {
                 }
             }
             Ok(())
-        } else if self.nodes.len() < 50 {
+        } else {
+            // no index, so nothing is known about the order of `nodes`
             self.nodes
                 .iter()
                 .filter(|n| node.matches(n))
                 .try_for_each(f)
-        } else if node.is_leaf() {
-            debug_assert!(self.nodes.windows(2).all(|w| w[0] < w[1]));
-            // for a leaf, `matches` is equality: binary search finds the only match
-            self.nodes
-                .binary_search(node)
-                .map_or(Ok(()), |i| f(&self.nodes[i]))
-        } else {
-            debug_assert!(node.all(|id| id == Id::from(0)));
-            debug_assert!(self.nodes.windows(2).all(|w| w[0] < w[1]));
-            let mut start = self.nodes.binary_search(node).unwrap_or_else(|i| i);
-            let discrim = node.discriminant();
-            while start > 0 && self.nodes[start - 1].discriminant() == discrim {
-                start -= 1;
-            }
-            let mut matching = self.nodes[start..]
-                .iter()
-                .take_while(|&n| n.discriminant() == discrim)
-                .filter(|n| node.matches(n));
-            debug_assert_eq!(
-                matching.clone().count(),
-                self.nodes.iter().filter(|n| node.matches(n)).count(),
-                "matching node {:?}\nstart={}\n{:?} != {:?}\nnodes: {:?}",
-                node,
-                start,
-                matching.clone().collect::<HashSet<_>>(),
-                self.nodes
-                    .iter()
-                    .filter(|n| node.matches(n))
-                    .collect::<HashSet<_>>(),
-                self.nodes
-            );
-            matching.try_for_each(&mut f)
         }
     }
 
     /// Rebuilds the group index over the sorted, deduplicated `nodes` and
     /// returns the class's signature, calling `each_discriminant` once per run
     /// of equal discriminants.
+    ///
+    /// `Language` does not require `Ord` to keep equal discriminants together;
+    /// a class where it splits one into several runs is left unindexed.
     pub(crate) fn index_discriminants(
         &mut self,
         mut each_discriminant: impl FnMut(&L::Discriminant),
@@ -512,6 +484,7 @@ impl<L: Language, D> EClass<L, D> {
         let mut groups = core::mem::take(&mut self.discrim_groups);
         groups.clear();
         let mut sig = 0;
+        let mut split = false;
         let mut prev: Option<L::Discriminant> = None;
         for (i, n) in self.nodes.iter().enumerate() {
             let discrim = n.discriminant();
@@ -519,10 +492,21 @@ impl<L: Language, D> EClass<L, D> {
                 continue;
             }
             let hash = discriminant_hash(&discrim);
+            let bit = signature_bit(hash);
+            // a repeated discriminant already has its bit set
+            if sig & bit != 0 {
+                split |= groups.iter().any(|&(h, start)| {
+                    h == group_hash(hash) && self.nodes[start as usize].discriminant() == discrim
+                });
+            }
             groups.push((group_hash(hash), i as u32));
-            sig |= signature_bit(hash);
+            sig |= bit;
             each_discriminant(&discrim);
             prev = Some(discrim);
+        }
+        if split {
+            groups.clear();
+            sig = ANY_DISCRIMINANT;
         }
         self.discrim_groups = groups;
         sig
