@@ -1718,19 +1718,18 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         congruence_neighbors: &[Vec<Id>],
     ) -> HashMap<(Id, Id), Id> {
         let n = self.explainfind.len();
+        // `congruence_distance` asks about the children of congruent nodes.
+        // The neighbor lists are symmetric, so each pair is visited once.
         let mut common_ancestor_queries: Vec<Vec<Id>> = vec![vec![]; n];
         for (s_int, others) in congruence_neighbors.iter().enumerate() {
             let start = Id::from(s_int);
-            for other in others {
-                let has_different_children = self
-                    .node(start)
-                    .children()
-                    .iter()
-                    .zip(self.node(*other).children().iter())
-                    .any(|(left, right)| left != right);
-                if has_different_children {
-                    common_ancestor_queries[s_int].push(*other);
-                    common_ancestor_queries[usize::from(*other)].push(start);
+            for &other in others.iter().filter(|&&other| start < other) {
+                let children = self.node(start).children();
+                for (&left, &right) in children.iter().zip(self.node(other).children()) {
+                    if left != right {
+                        common_ancestor_queries[usize::from(left)].push(right);
+                        common_ancestor_queries[usize::from(right)].push(left);
+                    }
                 }
             }
         }
