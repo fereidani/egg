@@ -124,6 +124,7 @@ pub fn test_runner<L, A>(
 fn percentile(k: f64, data: &[u128]) -> u128 {
     // assumes data is sorted
     assert!((0.0..=1.0).contains(&k));
+    assert!(!data.is_empty(), "no samples to take a percentile of");
     let i = (data.len() as f64 * k) as usize;
     let i = i.min(data.len() - 1);
     data[i]
