@@ -556,7 +556,8 @@ where
         id_buf.clear();
         id_buf.resize(self.p2.ast.len(), Id::from(0));
         let a2 = apply_pat(&mut id_buf, &self.p2.ast, egraph, subst);
-        a1 == a2
+        // ids from `subst` can be stale, and adding a pattern can merge classes
+        egraph.find(a1) == egraph.find(a2)
     }
 
     fn vars(&self) -> Vec<Var> {
