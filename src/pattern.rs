@@ -406,7 +406,7 @@ where
         searcher_ast: Option<&PatternAst<L>>,
         rule_name: Symbol,
     ) -> Vec<Id> {
-        let mut id_buf = vec![0.into(); self.ast.len()];
+        let mut id_buf = IdBuf::from_elem(Id::from(0), self.ast.len());
         let id = apply_pat(&mut id_buf, &self.ast, egraph, subst);
 
         if let Some(ast) = searcher_ast {
@@ -424,6 +424,9 @@ where
         Pattern::vars(self)
     }
 }
+
+/// Scratch space for [`apply_pat`], inline for typical pattern sizes.
+pub(crate) type IdBuf = smallvec::SmallVec<[Id; 16]>;
 
 pub(crate) fn apply_pat<L: Language, A: Analysis<L>>(
     ids: &mut [Id],

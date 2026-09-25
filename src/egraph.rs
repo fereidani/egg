@@ -871,7 +871,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
     /// Calling [`id_to_expr`](EGraph::id_to_expr) on this `Id` return an correspond to the
     /// instantiation of the pattern
     fn add_instantiation_noncanonical(&mut self, pat: &PatternAst<L>, subst: &Subst) -> Id {
-        let mut new_ids = Vec::with_capacity(pat.len());
+        let mut new_ids = smallvec::SmallVec::<[Id; 16]>::with_capacity(pat.len());
         for node in pat {
             match node {
                 ENodeOrVar::Var(var) => {

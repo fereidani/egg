@@ -1,6 +1,6 @@
 use crate::no_std_prelude::*;
 use core::fmt::{self, Debug, Display};
-use pattern::apply_pat;
+use pattern::{IdBuf, apply_pat};
 
 use crate::*;
 
@@ -551,10 +551,11 @@ where
     N: Analysis<L>,
 {
     fn check(&self, egraph: &mut EGraph<L, N>, _eclass: Id, subst: &Subst) -> bool {
-        let mut id_buf_1 = vec![0.into(); self.p1.ast.len()];
-        let mut id_buf_2 = vec![0.into(); self.p2.ast.len()];
-        let a1 = apply_pat(&mut id_buf_1, &self.p1.ast, egraph, subst);
-        let a2 = apply_pat(&mut id_buf_2, &self.p2.ast, egraph, subst);
+        let mut id_buf = IdBuf::from_elem(Id::from(0), self.p1.ast.len());
+        let a1 = apply_pat(&mut id_buf, &self.p1.ast, egraph, subst);
+        id_buf.clear();
+        id_buf.resize(self.p2.ast.len(), Id::from(0));
+        let a2 = apply_pat(&mut id_buf, &self.p2.ast, egraph, subst);
         a1 == a2
     }
 
