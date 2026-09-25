@@ -3,8 +3,9 @@ use crate::*;
 
 type Result = core::result::Result<(), ()>;
 
+/// Scratch state for running a [`Program`], reusable across runs.
 #[derive(Default)]
-struct Machine {
+pub(crate) struct Machine {
     reg: Vec<Id>,
     // a buffer to re-use for lookups
     lookup: Vec<Id>,
@@ -293,8 +294,17 @@ impl<L: Language> Program<L> {
         compiler.extract()
     }
 
-    pub fn run_with_limit<A>(
+    pub fn run_with_limit<A>(&self, egraph: &EGraph<L, A>, eclass: Id, limit: usize) -> Vec<Subst>
+    where
+        A: Analysis<L>,
+    {
+        self.run_with_limit_in(&mut Machine::default(), egraph, eclass, limit)
+    }
+
+    /// [`Program::run_with_limit`], reusing the buffers of `machine`.
+    pub(crate) fn run_with_limit_in<A>(
         &self,
+        machine: &mut Machine,
         egraph: &EGraph<L, A>,
         eclass: Id,
         mut limit: usize,
@@ -308,7 +318,7 @@ impl<L: Language> Program<L> {
             return vec![];
         }
 
-        let mut machine = Machine::default();
+        machine.reg.clear();
         machine.reg.push(egraph.find(eclass));
 
         let mut matches = Vec::new();

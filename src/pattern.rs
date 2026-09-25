@@ -6,6 +6,7 @@ use log::*;
 
 use thiserror::Error;
 
+use crate::machine::Machine;
 use crate::*;
 
 /// A pattern that can function as either a [`Searcher`] or [`Applier`].
@@ -297,20 +298,19 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
     }
 
     fn search_with_limit(&self, egraph: &EGraph<L, A>, limit: usize) -> Vec<SearchMatches<'_, L>> {
+        let mut machine = Machine::default();
+        let search = |eclass, limit| self.search_eclass_in(&mut machine, egraph, eclass, limit);
         match self.ast.last().unwrap() {
             ENodeOrVar::ENode(e) => {
                 let key = e.discriminant();
                 match egraph.classes_for_op(&key) {
                     None => vec![],
-                    Some(ids) => rewrite::search_eclasses_with_limit(self, egraph, ids, limit),
+                    Some(ids) => rewrite::search_eclasses_with_limit(ids, limit, search),
                 }
             }
-            ENodeOrVar::Var(_) => rewrite::search_eclasses_with_limit(
-                self,
-                egraph,
-                egraph.classes().map(|e| e.id),
-                limit,
-            ),
+            ENodeOrVar::Var(_) => {
+                rewrite::search_eclasses_with_limit(egraph.classes().map(|e| e.id), limit, search)
+            }
         }
     }
 
@@ -320,7 +320,26 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
         eclass: Id,
         limit: usize,
     ) -> Option<SearchMatches<'_, L>> {
-        let substs = self.program.run_with_limit(egraph, eclass, limit);
+        self.search_eclass_in(&mut Machine::default(), egraph, eclass, limit)
+    }
+
+    fn vars(&self) -> Vec<Var> {
+        Pattern::vars(self)
+    }
+}
+
+impl<L: Language> Pattern<L> {
+    /// Searches one e-class, running the program on `machine`.
+    fn search_eclass_in<A: Analysis<L>>(
+        &self,
+        machine: &mut Machine,
+        egraph: &EGraph<L, A>,
+        eclass: Id,
+        limit: usize,
+    ) -> Option<SearchMatches<'_, L>> {
+        let substs = self
+            .program
+            .run_with_limit_in(machine, egraph, eclass, limit);
         if substs.is_empty() {
             return None;
         }
@@ -330,10 +349,6 @@ impl<L: Language, A: Analysis<L>> Searcher<L, A> for Pattern<L> {
             substs,
             ast: Some(Cow::Borrowed(&self.ast)),
         })
-    }
-
-    fn vars(&self) -> Vec<Var> {
-        Pattern::vars(self)
     }
 }
 
