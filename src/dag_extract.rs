@@ -11,7 +11,7 @@
 
 use crate::no_std_prelude::*;
 
-use crate::util::{HashMap, HashSet};
+use crate::util::{HashMap, HashSet, set_remove};
 use crate::{Analysis, EGraph, Id, Language, RecExpr};
 
 /// Cost of an e-node itself, excluding its children: the DAG counterpart of
@@ -27,20 +27,6 @@ pub trait NodeCost<L: Language> {
 /// Bound on the total size of the cost sets, which can grow quadratically;
 /// past it, extraction returns `None`.
 const MAX_SET_ENTRIES: usize = 4_000_000;
-
-/// Drops `id` from `set`. Under `deterministic`, `IndexSet::remove` is
-/// deprecated; `swap_remove` reorders the set, which is harmless as the sets
-/// here are only used for membership.
-#[cfg(feature = "deterministic")]
-fn set_remove(set: &mut HashSet<Id>, id: &Id) {
-    set.swap_remove(id);
-}
-
-/// Drops `id` from `set`.
-#[cfg(not(feature = "deterministic"))]
-fn set_remove(set: &mut HashSet<Id>, id: &Id) {
-    set.remove(id);
-}
 
 /// The cheapest known choice for one e-class.
 struct CostSet {

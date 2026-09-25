@@ -63,6 +63,20 @@ mod hashmap {
     pub(crate) use hashbrown::hash_map::Entry;
 }
 
+/// Removes `value` from a set used only for membership. Under `deterministic`
+/// the set is an `IndexSet`, whose `remove` is deprecated; `swap_remove`
+/// reorders it, which membership does not notice.
+#[cfg(feature = "deterministic")]
+pub(crate) fn set_remove<T: core::hash::Hash + Eq>(set: &mut HashSet<T>, value: &T) {
+    set.swap_remove(value);
+}
+
+/// Removes `value` from a set used only for membership.
+#[cfg(not(feature = "deterministic"))]
+pub(crate) fn set_remove<T: core::hash::Hash + Eq>(set: &mut HashSet<T>, value: &T) {
+    set.remove(value);
+}
+
 pub(crate) fn hashmap_with_capacity<K, V>(cap: usize) -> hashmap::HashMap<K, V> {
     hashmap::HashMap::with_capacity_and_hasher(cap, <_>::default())
 }

@@ -262,7 +262,7 @@ where
         let mut in_queue: HashSet<Id> = queue.iter().copied().collect();
 
         while let Some(id) = queue.pop_front() {
-            in_queue.remove(&id);
+            crate::util::set_remove(&mut in_queue, &id);
             let class = self.egraph.find(id);
             let class = &self.egraph[class];
             let pass = self.make_pass(class);
