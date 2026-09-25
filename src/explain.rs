@@ -16,10 +16,45 @@ use num_traits::identities::{One, Zero};
 type ProofCost = BigUint;
 
 /// Cost of a path through the explanation graph, used only for comparisons
-/// while searching for short explanations. Saturating `u128` arithmetic: any
-/// proof long enough to saturate cannot be materialized anyway, and ordering
-/// between non-saturated costs is exact.
+/// while searching for short explanations. Saturating `u128` arithmetic:
+/// ordering between non-saturated costs is exact. Shared subproofs let a small
+/// proof saturate, so costs are never subtracted; see [`PathSum`].
 type PathCost = u128;
+
+/// Exact sum of the [`PathCost`]s along a chain of explanation tree edges:
+/// fewer than 2^64 edges of less than 2^128 each cannot overflow it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct PathSum {
+    hi: u64,
+    lo: u128,
+}
+
+impl PathSum {
+    fn new(cost: PathCost) -> Self {
+        PathSum { hi: 0, lo: cost }
+    }
+
+    fn add(self, other: PathSum) -> PathSum {
+        let (lo, carry) = self.lo.overflowing_add(other.lo);
+        PathSum {
+            hi: self.hi + other.hi + u64::from(carry),
+            lo,
+        }
+    }
+
+    /// `self - other`, where `other <= self`.
+    fn sub(self, other: PathSum) -> PathSum {
+        let (lo, borrow) = self.lo.overflowing_sub(other.lo);
+        PathSum {
+            hi: self.hi - other.hi - u64::from(borrow),
+            lo,
+        }
+    }
+
+    fn saturate(self) -> PathCost {
+        if self.hi == 0 { self.lo } else { PathCost::MAX }
+    }
+}
 
 const CONGRUENCE_LIMIT: usize = 2;
 const GREEDY_NUM_ITERS: usize = 2;
@@ -99,7 +134,7 @@ pub(crate) struct ExplainNodes<'a, L: Language> {
 
 #[derive(Default)]
 struct DistanceMemo {
-    parent_distance: Vec<(Id, PathCost)>,
+    parent_distance: Vec<(Id, PathSum)>,
     common_ancestor: HashMap<(Id, Id), Id>,
     tree_depth: Vec<PathCost>,
 }
@@ -1371,7 +1406,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         self.calculate_parent_distance(left, ancestor, distance_memo);
         self.calculate_parent_distance(right, ancestor, distance_memo);
 
-        // now all three share an ancestor
+        // now all three share an ancestor, and `a <= b`, `a <= c`
         let a = self.calculate_parent_distance(ancestor, Id::from(usize::MAX), distance_memo);
         let b = self.calculate_parent_distance(left, Id::from(usize::MAX), distance_memo);
         let c = self.calculate_parent_distance(right, Id::from(usize::MAX), distance_memo);
@@ -1385,8 +1420,9 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                 == distance_memo.parent_distance[usize::from(right)].0
         );
 
-        // calculate distance to find upper bound
-        b.saturating_add(c).saturating_sub(a.saturating_mul(2))
+        // calculate distance to find upper bound; the part above the ancestor
+        // can exceed `PathCost`, so subtract exactly
+        b.sub(a).add(c.sub(a)).saturate()
     }
 
     fn congruence_distance(
@@ -1430,7 +1466,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         enode: Id,
         ancestor: Id,
         distance_memo: &mut DistanceMemo,
-    ) -> PathCost {
+    ) -> PathSum {
         loop {
             let parent = distance_memo.parent_distance[usize::from(enode)].0;
             let dist = distance_memo.parent_distance[usize::from(enode)].1;
@@ -1440,8 +1476,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
 
             let parent_parent = distance_memo.parent_distance[usize::from(parent)].0;
             if parent_parent != parent {
-                let new_dist =
-                    dist.saturating_add(distance_memo.parent_distance[usize::from(parent)].1);
+                let new_dist = dist.add(distance_memo.parent_distance[usize::from(parent)].1);
                 distance_memo.parent_distance[usize::from(enode)] = (parent_parent, new_dist);
             } else {
                 if ancestor == Id::from(usize::MAX) {
@@ -1463,7 +1498,8 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                     }
                     Justification::Rule(_) => 1,
                 };
-                distance_memo.parent_distance[usize::from(parent)] = (self.parent(parent), cost);
+                distance_memo.parent_distance[usize::from(parent)] =
+                    (self.parent(parent), PathSum::new(cost));
             }
         }
 
@@ -1781,7 +1817,7 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         let mut congruence_neighbors = vec![vec![]; self.explainfind.len()];
         self.find_congruence_neighbors::<N>(classes, &mut congruence_neighbors, unionfind);
         let parent_distance = (0..self.explainfind.len())
-            .map(|i| (Id::from(i), 0))
+            .map(|i| (Id::from(i), PathSum::default()))
             .collect();
 
         let mut distance_memo = DistanceMemo {
