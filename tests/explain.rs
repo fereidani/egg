@@ -110,3 +110,21 @@ fn unions_at_the_bottom_of_a_deep_explanation_tree() {
     egraph.rebuild();
     assert_eq!(egraph.find(first), egraph.find(fresh));
 }
+
+#[test]
+fn congruences_are_counted_once() {
+    let mut egraph = Graph::default().with_explanations_enabled();
+    for leaf in ["u", "v", "w"] {
+        egraph.add_uncanonical(SymbolLang::leaf(leaf));
+    }
+    egraph.rebuild();
+    assert_eq!(egraph.get_num_congr(), 0);
+
+    let a = egraph.add_uncanonical(SymbolLang::leaf("a"));
+    let b = egraph.add_uncanonical(SymbolLang::leaf("b"));
+    egraph.add_uncanonical(SymbolLang::new("f", vec![a]));
+    egraph.add_uncanonical(SymbolLang::new("f", vec![b]));
+    egraph.union_trusted(a, b, "a=b");
+    egraph.rebuild();
+    assert_eq!(egraph.get_num_congr(), 1);
+}

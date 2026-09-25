@@ -1521,13 +1521,15 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
         unionfind: &UnionFind,
     ) {
         let mut counter = 0;
-        // add the normal congruence edges first
+        // add the normal congruence edges first, skipping roots, which point
+        // at themselves
         for node in &self.explainfind {
-            if let Justification::Congruence = node.parent_connection.justification {
-                let current = node.parent_connection.current;
-                let next = node.parent_connection.next;
-                congruence_neighbors[usize::from(current)].push(next);
-                congruence_neighbors[usize::from(next)].push(current);
+            let connection = &node.parent_connection;
+            if connection.current != connection.next
+                && let Justification::Congruence = connection.justification
+            {
+                congruence_neighbors[usize::from(connection.current)].push(connection.next);
+                congruence_neighbors[usize::from(connection.next)].push(connection.current);
                 counter += 1;
             }
         }
@@ -1543,6 +1545,9 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                     .map_children(|child| unionfind.find(child));
                 if let Some(others) = canonical_enodes.get_mut(&canonical) {
                     for other in others.iter() {
+                        if self.is_congruence_tree_edge(*enode, *other) {
+                            continue; // already added above
+                        }
                         congruence_neighbors[usize::from(*enode)].push(*other);
                         congruence_neighbors[usize::from(*other)].push(*enode);
                         counter += 1;
@@ -1558,6 +1563,16 @@ impl<'x, L: Language> ExplainNodes<'x, L> {
                 }
             }
         }
+    }
+
+    /// Whether `a` and `b` are joined by a congruence edge of the explanation
+    /// tree.
+    fn is_congruence_tree_edge(&self, a: Id, b: Id) -> bool {
+        let joins = |from: Id, to: Id| {
+            let connection = &self.explainfind[usize::from(from)].parent_connection;
+            connection.next == to && connection.justification == Justification::Congruence
+        };
+        joins(a, b) || joins(b, a)
     }
 
     pub fn get_num_congr<N: Analysis<L>>(
