@@ -79,12 +79,12 @@ impl<L: Language + FromOp> FromStr for MultiPattern<L> {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use MultiPatternParseError::*;
         let mut asts = vec![];
-        for split in s.trim().split(',') {
+        for split in split_top_level(s.trim(), ',') {
             let split = split.trim();
             if split.is_empty() {
                 continue;
             }
-            let mut parts = split.split('=');
+            let mut parts = split_top_level(split, '=');
             let vs = parts.next().unwrap_or("");
             let v: Var = vs.trim().parse().map_err(VariableError)?;
             let ps = parts
@@ -98,6 +98,20 @@ impl<L: Language + FromOp> FromStr for MultiPattern<L> {
         }
         Ok(MultiPattern::new(asts))
     }
+}
+
+/// Splits `s` at each `separator` outside parentheses, so operators such as
+/// `<=` stay whole.
+fn split_top_level(s: &str, separator: char) -> impl Iterator<Item = &str> {
+    let mut depth = 0_usize;
+    s.split(move |c: char| {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        c == separator && depth == 0
+    })
 }
 
 fn pattern_var<L: Language>(node: &ENodeOrVar<L>) -> Option<Var> {

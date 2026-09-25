@@ -72,3 +72,14 @@ fn path2() {
     runner.egraph.check_not("(pred (path 4 1))");
     runner.egraph.check_not("(pred (path 3 1))");
 }
+
+/// An `=` inside an operator must not split a clause.
+#[test]
+fn multipattern_operators_may_contain_equals() {
+    let parsed: MultiPattern<SymbolLang> = "?x = (<= ?a ?b), ?y = (= ?a ?b)".parse().unwrap();
+    let expected = MultiPattern::new(vec![
+        ("?x".parse().unwrap(), "(<= ?a ?b)".parse().unwrap()),
+        ("?y".parse().unwrap(), "(= ?a ?b)".parse().unwrap()),
+    ]);
+    assert_eq!(parsed, expected);
+}
