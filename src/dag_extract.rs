@@ -49,7 +49,7 @@ struct CostSet {
     /// Intrinsic cost of every class reachable through the choice, self
     /// included.
     costs: HashMap<Id, u64>,
-    /// Sum of `costs` values (cached).
+    /// Saturating sum of `costs` values (cached).
     total: u64,
 }
 
@@ -57,6 +57,8 @@ struct CostSet {
 /// priced once, at its chosen node's intrinsic cost. Returns the DAG cost and
 /// the extracted term (hash-consed, so shared classes appear once), or `None`
 /// when the root has no finite extraction or the memory bound is exceeded.
+///
+/// Costs add with saturation, so `u64::MAX` means "never choose".
 ///
 /// Unlike [`Extractor`](crate::Extractor), which pays for a shared subterm
 /// once per reference, this prices a term as it costs after
@@ -107,7 +109,10 @@ where
     choices_total(egraph, cost, root, &choices)?;
     let expr = rebuild(egraph, &choices, root)?;
     // the rebuilt expression holds each chosen class once, so this is its cost
-    let total = expr.as_ref().iter().map(|n| cost.node_cost(n)).sum();
+    let total = expr
+        .as_ref()
+        .iter()
+        .fold(0, |total: u64, n| total.saturating_add(cost.node_cost(n)));
     Some((total, expr))
 }
 
@@ -140,7 +145,7 @@ where
         in_stack.insert(cid);
         done.insert(cid);
         let node = egraph[cid].nodes.get(*choices.get(&cid)?)?;
-        total += cost.node_cost(node);
+        total = total.saturating_add(cost.node_cost(node));
         stack.push((cid, true));
         for &child in node.children() {
             let child = egraph.find(child);
@@ -304,7 +309,9 @@ where
             }
         }
         costs.insert(cid, cost.node_cost(node));
-        let total: u64 = costs.values().sum();
+        let total = costs
+            .values()
+            .fold(0, |total: u64, &c| total.saturating_add(c));
         if best.as_ref().is_none_or(|b| total < b.total) {
             best = Some(CostSet {
                 node_index,

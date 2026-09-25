@@ -143,3 +143,29 @@ fn self_referential_alternatives_are_skipped() {
 //   - The memory bound needs millions of nodes.
 //   - A root with no cost set needs every node of its class to be cyclic,
 //     which `add` and `union` cannot produce.
+
+/// `u64::MAX` means "never choose": costs saturate instead of wrapping.
+#[test]
+fn saturated_costs_are_never_cheap() {
+    struct Forbidding;
+    impl NodeCost<SymbolLang> for Forbidding {
+        fn node_cost(&self, enode: &SymbolLang) -> u64 {
+            match enode.op.as_str() {
+                "forbidden" => u64::MAX,
+                "a" => 5,
+                _ => 1,
+            }
+        }
+    }
+
+    let mut egraph: EGraph<SymbolLang, ()> = EGraph::default();
+    let b = egraph.add(SymbolLang::leaf("b"));
+    let forbidden = egraph.add(SymbolLang::new("forbidden", vec![b]));
+    let a = egraph.add(SymbolLang::leaf("a"));
+    egraph.union(a, forbidden);
+    egraph.rebuild();
+
+    let (cost, expr) = extract_dag(&egraph, a, &Forbidding).expect("root is extractable");
+    assert_eq!(cost, 5);
+    assert_eq!(expr.to_string(), "a");
+}
