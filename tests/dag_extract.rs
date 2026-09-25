@@ -140,7 +140,8 @@ fn self_referential_alternatives_are_skipped() {
 
 // No test covers the `None` result:
 //
-//   - The memory bound needs millions of nodes.
+//   - The memory bound trips on a chain of a few thousand nested nodes, but a
+//     test would pin that limitation rather than a contract.
 //   - A root with no cost set needs every node of its class to be cyclic,
 //     which `add` and `union` cannot produce.
 

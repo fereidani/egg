@@ -53,12 +53,14 @@ struct CostSet {
     total: u64,
 }
 
-/// Extract the cheapest term under DAG costing: every reachable e-class is
-/// priced once, at its chosen node's intrinsic cost. Returns the DAG cost and
-/// the extracted term (hash-consed, so shared classes appear once), or `None`
+/// Extract a cheap term under DAG costing: every reachable e-class is priced
+/// once, at its chosen node's intrinsic cost. Returns the DAG cost and the
+/// extracted term (hash-consed, so shared classes appear once), or `None`
 /// when the root has no finite extraction or the memory bound is exceeded.
 ///
-/// Costs add with saturation, so `u64::MAX` means "never choose".
+/// This is a heuristic (a greedy fixpoint, then local improvement), so the
+/// result can be a local minimum. Costs add with saturation, so `u64::MAX`
+/// means "never choose".
 ///
 /// Unlike [`Extractor`](crate::Extractor), which pays for a shared subterm
 /// once per reference, this prices a term as it costs after
