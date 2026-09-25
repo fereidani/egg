@@ -30,3 +30,39 @@ fn join_recexprs_handles_deep_children() {
         &[Id::from(deep.len() - 1)]
     );
 }
+
+mod two_generics {
+    use std::{
+        fmt::{Debug, Display},
+        hash::Hash,
+        str::FromStr,
+    };
+
+    use egg::{Id, Language, RecExpr, define_language};
+
+    define_language! {
+        /// Two generics and a variant with both data and children.
+        enum TwoGenerics<S, T> {
+            Num(T),
+            "+" = Add([Id; 2]),
+            Call(S, Vec<Id>),
+        }
+        where
+        S: Hash + Debug + Display + Clone + Eq + Ord + FromStr,
+        T: Hash + Debug + Display + Clone + Eq + Ord + FromStr,
+        <S as FromStr>::Err: Debug,
+        <T as FromStr>::Err: Debug,
+    }
+
+    #[test]
+    fn data_and_children_variant_accepts_several_generics() {
+        let expr: RecExpr<TwoGenerics<egg::Symbol, i32>> = "(f (+ 1 2) 3)".parse().unwrap();
+        let root = expr.last().unwrap();
+        assert!(matches!(root, TwoGenerics::Call(op, _) if op.as_str() == "f"));
+        assert_eq!(root.children().len(), 2);
+        assert_eq!(
+            expr[Id::from(2)],
+            TwoGenerics::Add([Id::from(0), Id::from(1)])
+        );
+    }
+}

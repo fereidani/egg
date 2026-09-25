@@ -234,7 +234,7 @@ macro_rules! __define_language {
         );
     };
 
-    ($(#[$meta:meta])* $vis:vis enum $name:ident [$($gen:ident)*]
+    ($(#[$meta:meta])* $vis:vis enum $name:ident [$($gen:ident),*]
      {
          $variant:ident ($data:ty, $ids:ty),
          $($variants:tt)*
@@ -245,7 +245,7 @@ macro_rules! __define_language {
      { $($display:tt)* } { $($from_op:tt)* }
     ) => {
         $crate::__define_language!(
-            $(#[$meta])* $vis enum $name [$($gen)*]
+            $(#[$meta])* $vis enum $name [$($gen),*]
             { $($variants)* }
             [$($where)*]
             ->
