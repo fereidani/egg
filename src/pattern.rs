@@ -406,14 +406,15 @@ where
         searcher_ast: Option<&PatternAst<L>>,
         rule_name: Symbol,
     ) -> Vec<Id> {
-        let mut id_buf = IdBuf::from_elem(Id::from(0), self.ast.len());
-        let id = apply_pat(&mut id_buf, &self.ast, egraph, subst);
-
         if let Some(ast) = searcher_ast {
             let (from, did_something) =
                 egraph.union_instantiations(ast, &self.ast, subst, rule_name);
-            if did_something { vec![from] } else { vec![] }
-        } else if egraph.union(eclass, id) {
+            return if did_something { vec![from] } else { vec![] };
+        }
+
+        let mut id_buf = IdBuf::from_elem(Id::from(0), self.ast.len());
+        let id = apply_pat(&mut id_buf, &self.ast, egraph, subst);
+        if egraph.union(eclass, id) {
             vec![eclass]
         } else {
             vec![]
