@@ -953,19 +953,27 @@ impl<L: Language> Explain<L> {
         set
     }
 
-    // reverse edges recursively to make this node the leader
+    /// Makes `node` the root of its explanation tree by reversing the edges on
+    /// its path to the root. Iterative, as the path can be as long as the tree.
+    /// `node`'s own connection is left for the caller to overwrite.
     fn make_leader(&mut self, node: Id) {
-        let next = self.explainfind[usize::from(node)].parent_connection.next;
-        if next != node {
-            self.make_leader(next);
-            let node_connection = &self.explainfind[usize::from(node)].parent_connection;
-            let pconnection = Connection {
-                justification: node_connection.justification.clone(),
-                is_rewrite_forward: !node_connection.is_rewrite_forward,
-                next: node,
-                current: next,
-            };
-            self.explainfind[usize::from(next)].parent_connection = pconnection;
+        let mut current = node;
+        let mut connection = self.explainfind[usize::from(node)]
+            .parent_connection
+            .clone();
+        while connection.next != current {
+            let next = connection.next;
+            let next_connection = core::mem::replace(
+                &mut self.explainfind[usize::from(next)].parent_connection,
+                Connection {
+                    justification: connection.justification,
+                    is_rewrite_forward: !connection.is_rewrite_forward,
+                    next: current,
+                    current: next,
+                },
+            );
+            current = next;
+            connection = next_connection;
         }
     }
 

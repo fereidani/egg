@@ -93,3 +93,20 @@ fn saturated_costs_do_not_make_long_proofs_look_free() {
     optimized.rebuild();
     assert_eq!(proof_steps(&mut optimized, pb, pa), 1.0);
 }
+
+/// Unions at the far end of a long chain must not overflow the stack.
+#[test]
+fn unions_at_the_bottom_of_a_deep_explanation_tree() {
+    let mut egraph = Graph::default().with_explanations_enabled();
+    let mut prev = egraph.add_uncanonical(SymbolLang::leaf("a0"));
+    let first = prev;
+    for i in 1..100_000 {
+        let next = egraph.add_uncanonical(SymbolLang::leaf(format!("a{i}")));
+        egraph.union_trusted(next, prev, "chain");
+        prev = next;
+    }
+    let fresh = egraph.add_uncanonical(SymbolLang::leaf("fresh"));
+    egraph.union_trusted(prev, fresh, "last");
+    egraph.rebuild();
+    assert_eq!(egraph.find(first), egraph.find(fresh));
+}
