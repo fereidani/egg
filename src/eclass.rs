@@ -21,12 +21,12 @@ pub struct EClass<L, D> {
     /// The original Ids of parent enodes.
     pub(crate) parents: Vec<Id>,
     /// Index over the runs of same-discriminant nodes in the sorted `nodes`
-    /// vector: `(hash of the discriminant, start offset of the run)`, in node
-    /// order. Rebuilt by `EGraph::rebuild` and cleared whenever the class is
-    /// mutated outside of a rebuild. Empty means "no index" and all queries
-    /// fall back to scanning/searching `nodes` directly.
+    /// vector: `(group_hash of the discriminant, start offset of the run)`,
+    /// in node order. Rebuilt by `EGraph::rebuild` and cleared whenever the
+    /// class is mutated outside of a rebuild. Empty means "no index" and all
+    /// queries fall back to scanning/searching `nodes` directly.
     #[cfg_attr(feature = "serde-1", serde(skip))]
-    pub(crate) discrim_groups: Vec<(u64, u32)>,
+    pub(crate) discrim_groups: DiscrimGroups,
 }
 
 impl<L, D> EClass<L, D> {
@@ -49,6 +49,16 @@ impl<L, D> EClass<L, D> {
     pub fn parents(&self) -> impl ExactSizeIterator<Item = Id> + '_ {
         self.parents.iter().copied()
     }
+}
+
+/// Group index of an [`EClass`]; up to two runs are stored inline, in the
+/// space of a `Vec`.
+pub(crate) type DiscrimGroups = smallvec::SmallVec<[(u32, u32); 2]>;
+
+/// The part of a [`discriminant_hash`] kept in a group index.
+#[inline]
+fn group_hash(discriminant_hash: u64) -> u32 {
+    (discriminant_hash >> 32) as u32
 }
 
 /// Hash of a discriminant, as used by group indexes and signatures.
@@ -419,6 +429,7 @@ impl<L: Language, D> EClass<L, D> {
             // its same-discriminant runs. Find the run by hash, re-check its head
             // node against collisions, and scan only that run.
             let discrim = node.discriminant();
+            let query_hash = group_hash(query_hash);
             let groups = &self.discrim_groups;
             for (i, &(hash, start)) in groups.iter().enumerate() {
                 if hash == query_hash {
@@ -508,7 +519,7 @@ impl<L: Language, D> EClass<L, D> {
                 continue;
             }
             let hash = discriminant_hash(&discrim);
-            groups.push((hash, i as u32));
+            groups.push((group_hash(hash), i as u32));
             sig |= signature_bit(hash);
             each_discriminant(&discrim);
             prev = Some(discrim);

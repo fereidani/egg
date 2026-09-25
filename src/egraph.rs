@@ -640,7 +640,7 @@ where
                 .collect(),
             data: self.map_data(src_eclass.data),
             parents: src_eclass.parents,
-            discrim_groups: Vec::new(),
+            discrim_groups: Default::default(),
         }
     }
 
@@ -1074,7 +1074,7 @@ impl<L: Language, N: Analysis<L>> EGraph<L, N> {
             nodes: vec![enode.clone()],
             data: N::make(self, &original, id),
             parents: Default::default(),
-            discrim_groups: Vec::new(),
+            discrim_groups: Default::default(),
         };
 
         debug_assert_eq!(Id::from(self.nodes.len()), id);
